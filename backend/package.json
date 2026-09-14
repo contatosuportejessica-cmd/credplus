@@ -1,0 +1,20 @@
+{
+  "name": "credplus-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Backend dedicado do CredPlus — primeiro app full-stack sobre a infraestrutura reutilizável do ZHEUS.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "migrar": "node src/migrar.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "pg": "^8.22.0",
+    "jsonwebtoken": "^9.0.2",
+    "dotenv": "^17.4.2",
+    "express-rate-limit": "^8.6.2",
+    "multer": "^2.0.1",
+    "helmet": "^8.3.0"
+  }
+}
