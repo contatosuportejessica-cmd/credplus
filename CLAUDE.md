@@ -33,3 +33,35 @@ Se este arquivo tiver seções de **TEMA** e/ou **PALETA** mais abaixo, elas man
 O usuario NAO escolheu template. Nesta ordem de preferencia:
 1. **Use a skill `zheus-templates`**: escolha no catalogo o template que melhor casa com o pedido e aplique-o como ponto de partida (visual profissional em segundos).
 2. So se o pedido exigir um visual muito especifico que nenhum template atende: crie design proprio seguindo o guia `.references/design-system-base.md`.
+
+<!-- ZHEUS:MEMORIA:INICIO -->
+# Memória do projeto (mantida pelo Zheus)
+
+Este arquivo é escrito automaticamente. Ele existe para que o trabalho
+continue igual quando o motor de IA muda (Claude Code ↔ GPT Codex).
+**Leia antes de agir e não recomece o que já está feito.**
+
+## Imagens — use de verdade, não deixe espaço vazio
+
+Este projeto tem um gerador de imagens. Ao construir telas, **gere as
+imagens** em vez de usar `<div>` cinza, ícone genérico ou link quebrado:
+
+```
+node .zheus/imagem.cjs "descrição do que aparece na foto" assets/hero.png 1200x600
+```
+
+- O caminho do destino é relativo à raiz do projeto.
+- O arquivo pode sair como `.jpg` mesmo se você pedir `.png` — o comando
+  responde com o nome final em `"arquivo"`. **Use esse nome no HTML.**
+- A imagem sai na medida exata que você pedir, e a resposta traz
+  `"largura"` e `"altura"` para conferência. Não precisa abrir o arquivo.
+- Descreva a cena em português, com contexto: "vitrine de loja de tênis,
+  luz natural, fundo claro" rende melhor que "tênis".
+- Gere uma imagem por seção que precise (hero, produtos, depoimentos).
+
+**Cada imagem gerada é cobrada.** Depois de gerar, use o arquivo — não
+substitua por foto de banco nem regere "para padronizar". Se alguma não
+servir, regere só aquela, dizendo o que mudar. E se a medida atrapalhar o
+layout, ajuste o CSS (`object-fit: cover`) em vez de trocar a imagem.
+
+<!-- ZHEUS:MEMORIA:FIM -->

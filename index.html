@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>CredPlus — Seu controle. Mais resultados.</title>
+  <meta name="description" content="CredPlus: gestão privada de clientes, empréstimos, cobranças e fluxo de caixa.">
+  <meta name="theme-color" content="#052e21">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/style.css?v=1789230342586">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%23052e21'/%3E%3Cpath d='M4 16l5-6 4 3 6-8' stroke='%2310b981' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+</head>
+<body>
+  <div id="app">
+    <div class="carregando" style="min-height:100vh"><div class="spinner"></div></div>
+  </div>
+  <script>
+    // Rede de segurança: se algo falhar antes do app assumir a tela, mostramos
+    // o erro em vez de deixar o carregamento girando para sempre.
+    (function () {
+      var jaMostrou = false;
+      function mostrarErro(mensagem) {
+        if (jaMostrou) return;
+        jaMostrou = true;
+        var app = document.getElementById('app');
+        if (!app) return;
+        app.innerHTML = '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;font-family:sans-serif;background:#f6f8f7">' +
+          '<div style="max-width:480px;background:#fff;border:1px solid #fca5a5;border-radius:16px;padding:28px;box-shadow:0 8px 24px rgba(0,0,0,.06)">' +
+          '<h2 style="margin:0 0 10px;color:#a3231a;font-size:18px">Não foi possível carregar o CredPlus</h2>' +
+          '<p style="margin:0 0 14px;color:#3f4744;font-size:14px;line-height:1.5">Ocorreu um erro ao iniciar a aplicação. Detalhe técnico:</p>' +
+          '<pre style="white-space:pre-wrap;word-break:break-word;background:#fdecea;color:#a3231a;padding:12px;border-radius:8px;font-size:12px;max-height:200px;overflow:auto">' + mensagem + '</pre>' +
+          '<button onclick="location.reload()" style="margin-top:16px;background:#10b981;color:#fff;border:none;padding:10px 18px;border-radius:8px;font-weight:700;cursor:pointer">Tentar novamente</button>' +
+          '</div></div>';
+      }
+      window.addEventListener('error', function (e) { mostrarErro((e.filename || '') + ':' + (e.lineno || '') + '\n' + (e.message || e.error)); });
+      window.addEventListener('unhandledrejection', function (e) { mostrarErro(String((e.reason && e.reason.stack) || e.reason)); });
+      // Exposto para app.js reportar o erro real, sem a censura que o navegador
+      // aplica a scripts servidos de outra origem (aparece como "Script error.").
+      window.__erroFatalCredPlus = mostrarErro;
+      window.addEventListener('load', function () {
+        setTimeout(function () {
+          var app = document.getElementById('app');
+          if (app && app.querySelector('.carregando')) {
+            mostrarErro('O carregamento excedeu o tempo esperado (possível falha ao carregar assets/js/app.js ou travamento na verificação de sessão).');
+          }
+        }, 8000);
+      });
+    })();
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.4/dist/jspdf.plugin.autotable.min.js"></script>
+  <script src="assets/js/app.js?v=1789244104471"></script>
+</body>
+</html>

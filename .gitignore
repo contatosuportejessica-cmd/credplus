@@ -1,0 +1,10 @@
+.claude/
+.zheus/
+.references/
+.chat-history.json
+.chat-history.json.bak
+.DS_Store
+node_modules/
+.env
+.env.*
+*.log
