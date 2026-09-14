@@ -6,7 +6,7 @@ description: Catálogo de templates do Zheus — buscar, escolher, aplicar ou tr
 # Templates do Zheus — catálogo e aplicação
 
 ## Catálogo (fonte única)
-Leia `/root/ZHEUS/themes/catalog.json` — todos os templates com id, pasta, categoria
+Leia `/Users/jessica/ZHEUS-LOCAL/ZHEUS/themes/catalog.json` — todos os templates com id, pasta, categoria
 (`design-system` = base visual completa | `site` = página pronta), tipo (`dark`/`light`/`component`)
 e quais arquivos têm. NÃO varra as pastas manualmente para "comparar" — escolha pelo catálogo e aplique UM.
 
@@ -16,7 +16,7 @@ Dark vs light: pelo tom do pedido (ou pergunte em 1 linha se for decisivo).
 
 ## Aplicar template como ponto de partida (projeto vazio)
 ```bash
-cp -R "/root/ZHEUS/themes/<pasta>/." .
+cp -R "/Users/jessica/ZHEUS-LOCAL/ZHEUS/themes/<pasta>/." .
 mkdir -p .references && mv design-system.html .references/ 2>/dev/null || true
 ```
 Depois trabalhe em um dos DOIS MODOS:

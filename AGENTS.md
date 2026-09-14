@@ -2,8 +2,23 @@
 # Memória do projeto (mantida pelo Zheus)
 
 Este arquivo é escrito automaticamente. Ele existe para que o trabalho
-continue igual quando o motor de IA muda (Claude Code ↔ GPT Codex).
+continue igual quando o motor de IA muda (Claude Code ↔ GPT Codex ↔ OpenCode).
 **Leia antes de agir e não recomece o que já está feito.**
+
+## Fronteira de infraestrutura (regra de segurança — sempre vale)
+
+Você cria e edita SOMENTE o projeto: código, `vercel.json`, `migrations/*.sql`, `api/*`, `package.json`, etc.
+
+Você NUNCA executa, por conta própria (CLI, `gh`, `vercel`, API direta ou qualquer outro meio):
+- criar ou configurar repositório no GitHub, nem `git push` para um remoto;
+- criar, vincular ou configurar projeto na Vercel;
+- provisionar ou alterar banco Neon;
+- criar, alterar ou ler variáveis de ambiente remotas (na Vercel ou em qualquer provedor);
+- disparar deployment/publicação.
+
+Isso é assim mesmo que você tenha `gh`/`vercel` disponíveis no terminal e mesmo que pareça mais rápido fazer direto — o Zheus tem um painel Publicação com esses mecanismos oficiais, e SÓ por eles o estado (GitHub/Vercel/Neon vinculados, migrations aplicadas) fica sincronizado com o resto do sistema. Fazer por fora funciona só por fora: o painel nunca fica sabendo, e o usuário perde o controle real dessas conexões.
+
+Se o usuário pedir para "publicar", "colocar no ar", "subir pro GitHub" ou similar: prepare os arquivos necessários (ex.: `vercel.json` correto, migrations, variáveis documentadas em `.env.example`) e diga a ele para usar o painel Publicação do Zheus — não tente fazer você mesmo.
 
 ## Imagens — use de verdade, não deixe espaço vazio
 
