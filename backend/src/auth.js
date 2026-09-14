@@ -8,8 +8,15 @@ const crypto = require('crypto');
 
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET || JWT_SECRET.length < 32) {
-  console.error('[FATAL] JWT_SECRET ausente ou curto demais (>=32 chars). Confira o .env.');
-  process.exit(1);
+  // Era `process.exit(1)` — correto num processo PM2 de vida longa (falha
+  // rápido no boot), mas destrutivo numa função serverless: `require()`
+  // deste módulo acontece a cada invocação (ou reaproveitando um container
+  // já quente), e matar o PROCESSO em vez de recusar só ESTA invocação
+  // podia derrubar outras requisições em andamento no mesmo container.
+  // `throw` continua bloqueando 100% do uso sem segredo forte — só de um
+  // jeito que a Vercel trata como falha normal da função (500), não como
+  // processo caído.
+  throw new Error('[FATAL] JWT_SECRET ausente ou curto demais (>=32 chars). Confira as variáveis de ambiente.');
 }
 const JWT_ISS = 'credplus';
 const JWT_AUD = 'credplus-app';

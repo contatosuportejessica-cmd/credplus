@@ -14,6 +14,7 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const crypto = require('crypto');
 const multer = require('multer');
 const db = require('../db');
@@ -22,12 +23,34 @@ const { exigirAuth } = require('../auth');
 const router = express.Router();
 router.use(exigirAuth);
 
-const UPLOADS_DIR = process.env.UPLOADS_DIR;
-if (!UPLOADS_DIR) { console.error('[FATAL] UPLOADS_DIR não definido no .env'); process.exit(1); }
-fs.mkdirSync(UPLOADS_DIR, { recursive: true, mode: 0o700 });
+// Era `process.exit(1)` + `fs.mkdirSync` direto no carregamento do módulo —
+// correto numa VPS (falha rápido no boot, disco persistente de verdade),
+// mas fatal numa função serverless: este arquivo é exigido incondicionalmente
+// por backend/src/app.js, então um `process.exit`/`EROFS` aqui derrubava
+// TODAS as rotas (cadastro, login, tudo), não só upload. Sem UPLOADS_DIR
+// definido, cai em os.tmpdir() (o único diretório gravável garantido na
+// Vercel); a criação da pasta é adiada para o momento de um upload de
+// verdade, nunca no `require()`.
+//
+// AVISO (não escondido, só registrado aqui): `/tmp` na Vercel é efêmero —
+// não sobrevive entre invocações/deploys. Uploads continuam funcionando
+// dentro de uma mesma invocação (enviar e logo em seguida baixar), mas não
+// há garantia de persistência a longo prazo sem um storage externo (ex.:
+// Vercel Blob/S3) — isso é uma limitação arquitetural herdada da VPS
+// (disco local), não algo que este ajuste mínimo resolve sozinho.
+const UPLOADS_DIR = process.env.UPLOADS_DIR || path.join(os.tmpdir(), 'credplus-uploads');
+let _uploadsDirPronto = false;
+function garantirUploadsDir() {
+  if (_uploadsDirPronto) return;
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true, mode: 0o700 });
+  _uploadsDirPronto = true;
+}
 
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, UPLOADS_DIR),
+  destination: (req, file, cb) => {
+    try { garantirUploadsDir(); cb(null, UPLOADS_DIR); }
+    catch (e) { cb(e); }
+  },
   filename: (req, file, cb) => cb(null, crypto.randomUUID()),
 });
 const upload = multer({

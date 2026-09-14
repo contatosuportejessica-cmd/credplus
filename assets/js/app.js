@@ -367,17 +367,14 @@ window.CP = window.CP || {};
   'use strict';
   const { armazenamento } = window.CP;
 
-  // A API do CredPlus vive sempre em /site/credplus/api/*, tanto publicado
-  // quanto no preview do ZHEUS (que roteia esse caminho para o backend real
-  // mesmo a página sendo servida visualmente em /preview/credplus~.../).
-  // NUNCA derive esse caminho a partir de window.location.pathname: no
-  // preview o pathname é /preview/credplus~<id>/..., não contém
-  // "/site/credplus/", e calcular a base a partir dele produzia "/api"
-  // (raiz do domínio do preview) em vez de "/site/credplus/api" — rota que
-  // não existe ali, o fetch falhava e o app mascarava isso como "Falha de
-  // rede". O caminho abaixo é absoluto (começa com "/"), não fixa domínio
-  // nem IP, e funciona em ambos os ambientes.
-  const API_BASE = '/site/credplus/api';
+  // A API do CredPlus vive em /api/* — funções serverless da Vercel
+  // (api/[...path].js na raiz do projeto, que expõe backend/src/app.js).
+  // Antes disto apontava para /site/credplus/api/*, um proxy da VPS antiga
+  // que a Vercel não tem: qualquer chamada de cadastro/login voltava 404, e
+  // o app mostrava "Cadastro de novas contas ainda não está disponível
+  // neste servidor" (ver app.js mais abaixo, tratamento de err.status===404).
+  // Caminho absoluto (começa com "/"), não fixa domínio nem IP.
+  const API_BASE = '/api';
 
   const CHAVE_TOKEN = 'credplus_token';
   const CHAVE_LEMBRAR = 'credplus_lembrar';

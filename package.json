@@ -1,0 +1,14 @@
+{
+  "name": "credplus",
+  "private": true,
+  "version": "0.1.0",
+  "description": "CredPlus — frontend estático na raiz + API serverless da Vercel em /api, reaproveitando a lógica de negócio de /backend/src.",
+  "dependencies": {
+    "express": "^4.21.0",
+    "pg": "^8.22.0",
+    "jsonwebtoken": "^9.0.2",
+    "express-rate-limit": "^8.6.2",
+    "multer": "^2.0.1",
+    "helmet": "^8.3.0"
+  }
+}
