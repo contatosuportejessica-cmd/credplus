@@ -1326,7 +1326,6 @@ function renderLogin(container, { aoAutenticar, irParaRegistro, aoEntrarDemo }) 
         <h1 class="slogan-grande">Seu controle.<br>Mais resultados.</h1>
         <p class="slogan-sub">Gerencie clientes, empréstimos, cobranças e sua rentabilidade em um único lugar, com seus dados sempre sincronizados entre computador e celular.</p>
       </div>
-      <img src="assets/img/login-hero.jpg" alt="">
       <div class="auth-rodape-visual">© ${new Date().getFullYear()} CredPlus — Gestão financeira privada</div>
     </div>
     <div class="auth-painel-form">
@@ -1414,7 +1413,6 @@ function renderRegistro(container, { aoRegistrar, irParaLogin }) {
         <h1 class="slogan-grande">Organize sua carteira de clientes com clareza.</h1>
         <p class="slogan-sub">Crie sua conta e comece a controlar empréstimos, recebimentos e metas hoje mesmo.</p>
       </div>
-      <img src="assets/img/login-hero.jpg" alt="">
       <div class="auth-rodape-visual">© ${new Date().getFullYear()} CredPlus — Gestão financeira privada</div>
     </div>
     <div class="auth-painel-form">

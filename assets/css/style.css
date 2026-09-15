@@ -79,10 +79,6 @@ input,select,textarea{font-family:inherit}
   position:relative;
   overflow:hidden;
 }
-.auth-painel-visual img{
-  position:absolute; right:-60px; bottom:-40px; width:70%; max-width:520px;
-  opacity:.92; filter:drop-shadow(0 20px 40px rgba(0,0,0,.35));
-}
 .auth-painel-form{
   flex:1;
   display:flex;
