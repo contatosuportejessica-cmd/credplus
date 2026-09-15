@@ -622,6 +622,13 @@ window.CP = window.CP || {};
 
 const CHAVE_DEMO = 'credplus_modo_demo';
 
+function arquivoParaUrl(dadosB64, mime) {
+  const bin = atob(dadosB64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return URL.createObjectURL(new Blob([bytes], { type: mime || 'application/octet-stream' }));
+}
+
 class Loja extends EventTarget {
   constructor() {
     super();
@@ -751,6 +758,23 @@ class Loja extends EventTarget {
     return api.get(`/emprestimos/${id}`);
   }
 
+  async atualizarEmprestimo(id, dados) {
+    if (this.demoAtivo) {
+      const emp = this.demo.emprestimos.find((e) => e.id === id);
+      if (!emp) throw new Error('Empréstimo não encontrado.');
+      const temPag = this.demo.pagamentos.some((p) => p.emprestimoId === id);
+      if (temPag && dados.dataOperacao && dados.dataOperacao !== emp.dataOperacao) {
+        throw new Error('Com pagamentos registrados, só as observações podem ser alteradas.');
+      }
+      Object.assign(emp, dados);
+      this.emitir('mudou');
+      return this._resumoEmprestimo(emp);
+    }
+    const atualizado = await api.put(`/emprestimos/${id}`, dados);
+    this.emitir('mudou');
+    return atualizado;
+  }
+
   async criarEmprestimo(dados) {
     if (this.demoAtivo) {
       const id = gerarId();
@@ -831,25 +855,95 @@ class Loja extends EventTarget {
   }
 
   // ===== Pagamentos =====
-  async registrarPagamento({ clienteId, emprestimoId, parcelaId, valorRecebido, data, forma, observacao, chaveIdempotencia }) {
+  // Aceita contrato legado (parcelaId + valorRecebido) OU multi:
+  // itens: [{ parcelaId, valor }]. No modo demo ambos atualizam os saldos.
+  async registrarPagamento({ clienteId, emprestimoId, parcelaId, itens, valorRecebido, data, forma, observacao, chaveIdempotencia }) {
+    const listaItens = Array.isArray(itens) && itens.length
+      ? itens
+      : [{ parcelaId, valor: valorRecebido }];
+    const total = listaItens.reduce((a, i) => a + i.valor, 0);
     if (this.demoAtivo) {
       const parcelas = this.demo.parcelasPorEmprestimo[emprestimoId] || [];
-      const parcela = parcelas.find((p) => p.id === parcelaId);
-      if (!parcela) throw new Error('Parcela não encontrada.');
-      parcela.valorPago = (parcela.valorPago || 0) + valorRecebido;
-      if (parcela.valorPago >= parcela.valor) parcela.status = 'pago';
-      const pagamento = { id: gerarId(), demo: true, clienteId, emprestimoId, parcelaId, valorEsperado: parcela.valor, valorRecebido, data, forma, observacao: observacao || '' };
+      for (const it of listaItens) {
+        const parc = parcelas.find((p) => p.id === it.parcelaId);
+        if (!parc) throw new Error('Parcela não encontrada.');
+        parc.valorPago = (parc.valorPago || 0) + it.valor;
+        if (parc.valorPago >= parc.valor) parc.status = 'pago';
+      }
+      const primeira = parcelas.find((p) => p.id === listaItens[0].parcelaId);
+      const pagamento = {
+        id: gerarId(), demo: true, clienteId, emprestimoId, parcelaId: listaItens.length === 1 ? listaItens[0].parcelaId : null,
+        parcelaIds: listaItens.map((i) => i.parcelaId),
+        itens: listaItens.map((i) => {
+          const parc = parcelas.find((p) => p.id === i.parcelaId);
+          return { parcelaId: i.parcelaId, numero: parc?.numero ?? null, valor: i.valor };
+        }),
+        valorEsperado: total, valorRecebido: total, data, forma, observacao: observacao || '',
+        criadoEm: new Date().toISOString(),
+      };
+      void primeira;
       this.demo.pagamentos.unshift(pagamento);
       this.demo.movimentacoes.unshift({
         id: gerarId(), demo: true, tipo: 'entrada', categoria: 'Recebimento de parcela', clienteId, emprestimoId,
-        valor: valorRecebido, data, descricao: `Pagamento da parcela ${parcela.numero}/${parcela.total}`,
+        valor: total, data, descricao: `Pagamento de ${listaItens.length} parcela(s)`,
       });
       this.emitir('mudou');
       return pagamento;
     }
-    const pagamento = await api.post('/pagamentos', { cliente_id: clienteId, emprestimo_id: emprestimoId, parcela_id: parcelaId, valor_recebido: valorRecebido, data, forma, observacao, chave_idempotencia: chaveIdempotencia });
+    const corpo = {
+      cliente_id: clienteId, emprestimo_id: emprestimoId, valor_recebido: total,
+      data, forma, observacao, chave_idempotencia: chaveIdempotencia,
+    };
+    if (listaItens.length === 1 && parcelaId) corpo.parcela_id = parcelaId;
+    else corpo.itens = listaItens.map((i) => ({ parcela_id: i.parcelaId, valor: i.valor }));
+    const pagamento = await api.post('/pagamentos', corpo);
     this.emitir('mudou');
     return pagamento;
+  }
+
+  // ===== Arquivos do cliente =====
+  async listarArquivos(clienteId) {
+    if (this.demoAtivo) {
+      return (this.demo.arquivos || []).filter((a) => a.clienteId === clienteId);
+    }
+    return api.get(`/clientes/${clienteId}/arquivos`);
+  }
+
+  async adicionarArquivo(clienteId, { nome, mime, dados }) {
+    if (this.demoAtivo) {
+      this.demo.arquivos = this.demo.arquivos || [];
+      const novo = { id: gerarId(), demo: true, clienteId, nome, mime, tamanho: Math.round(dados.length * 3 / 4), criadoEm: new Date().toISOString(), dados };
+      this.demo.arquivos.unshift(novo);
+      this.emitir('mudou');
+      return novo;
+    }
+    const novo = await api.post(`/clientes/${clienteId}/arquivos`, { nome, mime, dados });
+    this.emitir('mudou');
+    return novo;
+  }
+
+  async baixarArquivo(clienteId, arquivo) {
+    if (this.demoAtivo && arquivo.dados) {
+      return arquivoParaUrl(arquivo.dados, arquivo.mime);
+    }
+    const token = obterToken();
+    const resposta = await fetch(`${api.base}/clientes/${clienteId}/arquivos/${arquivo.id}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!resposta.ok) throw new ErroAPI('Não foi possível baixar o arquivo.', resposta.status, null);
+    const blob = await resposta.blob();
+    return URL.createObjectURL(blob);
+  }
+
+  async excluirArquivo(clienteId, arquivoId) {
+    if (this.demoAtivo) {
+      this.demo.arquivos = (this.demo.arquivos || []).filter((a) => a.id !== arquivoId);
+      this.emitir('mudou');
+      return true;
+    }
+    await api.del(`/clientes/${clienteId}/arquivos/${arquivoId}`);
+    this.emitir('mudou');
+    return true;
   }
 
   async listarPagamentos({ clienteId, emprestimoId } = {}) {
@@ -1994,30 +2088,30 @@ async function renderDashboard(container, { usuario, navegar, abrirNovoCliente, 
 window.CP = window.CP || {};
 (function () {
   'use strict';
-  const { loja, ErroAPI, formatarMoeda, formatarData, iniciais, debounce, linkWhatsapp, normalizarTelefone, escapeHtml, icone, estadoCarregando, estadoVazio, badgeStatus, toast, abrirModal, confirmarAcao } = window.CP;
+  const { loja, ErroAPI, formatarMoeda, formatarData, iniciais, debounce, linkWhatsapp, normalizarTelefone, escapeHtml, icone, estadoCarregando, estadoVazio, badgeStatus, toast, abrirModal, confirmarAcao, abrirModalRegistrarPagamento } = window.CP;
 
-function abrirModalNovoCliente({ aoSalvar } = {}) {
+function abrirModalEditarCliente(cliente, { aoSalvar } = {}) {
   const { elemento, fechar } = abrirModal({
-    titulo: 'Novo cliente',
+    titulo: 'Editar cliente',
     tamanho: 'lg',
     corpoHtml: `
       <form id="form-cliente">
         <div class="form-grid">
-          <div class="campo form-full"><label>Nome completo *</label><input class="input" id="cli-nome" required></div>
-          <div class="campo"><label>Telefone</label><input class="input" id="cli-telefone" placeholder="(11) 99999-9999"></div>
-          <div class="campo"><label>WhatsApp</label><input class="input" id="cli-whatsapp" placeholder="(11) 99999-9999"></div>
-          <div class="campo"><label>E-mail</label><input class="input" type="email" id="cli-email"></div>
-          <div class="campo"><label>CPF/documento</label><input class="input" id="cli-documento"></div>
-          <div class="campo form-full"><label>Endereço</label><input class="input" id="cli-endereco"></div>
-          <div class="campo"><label>Complemento</label><input class="input" id="cli-complemento"></div>
-          <div class="campo"><label>Cidade</label><input class="input" id="cli-cidade"></div>
-          <div class="campo"><label>Estado</label><input class="input" id="cli-estado" maxlength="2" placeholder="SP"></div>
-          <div class="campo"><label>CEP</label><input class="input" id="cli-cep"></div>
-          <div class="campo form-full"><label>Link de localização</label><input class="input" id="cli-localizacao" placeholder="https://maps.google.com/..."></div>
-          <div class="campo form-full"><label>Observações</label><textarea class="input" id="cli-observacoes" rows="3"></textarea></div>
+          <div class="campo form-full"><label>Nome completo *</label><input class="input" id="cli-nome" required value="${escapeHtml(cliente.nome || '')}"></div>
+          <div class="campo"><label>Telefone</label><input class="input" id="cli-telefone" value="${escapeHtml(cliente.telefone || '')}"></div>
+          <div class="campo"><label>WhatsApp</label><input class="input" id="cli-whatsapp" value="${escapeHtml(cliente.whatsapp || '')}"></div>
+          <div class="campo"><label>E-mail</label><input class="input" type="email" id="cli-email" value="${escapeHtml(cliente.email || '')}"></div>
+          <div class="campo"><label>CPF/documento</label><input class="input" id="cli-documento" value="${escapeHtml(cliente.documento || '')}"></div>
+          <div class="campo form-full"><label>Endereço</label><input class="input" id="cli-endereco" value="${escapeHtml(cliente.endereco || '')}"></div>
+          <div class="campo"><label>Complemento</label><input class="input" id="cli-complemento" value="${escapeHtml(cliente.complemento || '')}"></div>
+          <div class="campo"><label>Cidade</label><input class="input" id="cli-cidade" value="${escapeHtml(cliente.cidade || '')}"></div>
+          <div class="campo"><label>Estado</label><input class="input" id="cli-estado" maxlength="2" value="${escapeHtml(cliente.estado || '')}"></div>
+          <div class="campo"><label>CEP</label><input class="input" id="cli-cep" value="${escapeHtml(cliente.cep || '')}"></div>
+          <div class="campo form-full"><label>Link de localização</label><input class="input" id="cli-localizacao" value="${escapeHtml(cliente.localizacao || '')}"></div>
+          <div class="campo form-full"><label>Observações</label><textarea class="input" id="cli-observacoes" rows="3">${escapeHtml(cliente.observacoes || '')}</textarea></div>
         </div>
       </form>`,
-    rodapeHtml: `<button class="btn btn-secundario" id="btn-cancelar">Cancelar</button><button class="btn btn-primario" id="btn-salvar-cliente">Salvar cliente</button>`,
+    rodapeHtml: `<button class="btn btn-secundario" id="btn-cancelar">Cancelar</button><button class="btn btn-primario" id="btn-salvar-cliente">Salvar alterações</button>`,
   });
   elemento.querySelector('#btn-cancelar').addEventListener('click', fechar);
   elemento.querySelector('#btn-salvar-cliente').addEventListener('click', async () => {
@@ -2038,12 +2132,100 @@ function abrirModalNovoCliente({ aoSalvar } = {}) {
       observacoes: elemento.querySelector('#cli-observacoes').value.trim(),
     };
     try {
+      const atualizado = await loja.atualizarCliente(cliente.id, dados);
+      toast('Cliente atualizado.', 'sucesso');
+      fechar();
+      aoSalvar?.(atualizado);
+    } catch (err) {
+      toast(err.message || 'Não foi possível salvar o cliente.', 'erro');
+    }
+  });
+}
+  // Lê um File, valida e envia como Base64 (teto de 3MB, igual ao backend).
+  function enviarArquivoParaCliente(clienteId, arquivo) {
+    return new Promise((resolve, reject) => {
+      if (!arquivo) return reject(new Error('Nenhum arquivo selecionado.'));
+      if (arquivo.size > 3 * 1024 * 1024) return reject(new Error(`"${arquivo.name}" excede 3MB.`));
+      const leitor = new FileReader();
+      leitor.onload = async () => {
+        try {
+          const dataUrl = String(leitor.result || '');
+          const partes = dataUrl.split(',');
+          if (partes.length !== 2) throw new Error('Não foi possível ler o arquivo.');
+          const mime = (dataUrl.match(/^data:([^;]+);base64$/) || [])[1] || arquivo.type || 'application/octet-stream';
+          const novo = await loja.adicionarArquivo(clienteId, { nome: arquivo.name, mime, dados: partes[1] });
+          resolve(novo);
+        } catch (err) {
+          reject(err);
+        }
+      };
+      leitor.onerror = () => reject(new Error('Não foi possível ler o arquivo.'));
+      leitor.readAsDataURL(arquivo);
+    });
+  }
+
+function abrirModalNovoCliente({ aoSalvar } = {}) {
+  const { elemento, fechar } = abrirModal({
+    titulo: 'Novo cliente',
+    tamanho: 'lg',
+    corpoHtml: `
+      <form id="form-cliente">
+        <div class="form-grid">
+          <div class="campo form-full"><label>Nome completo *</label><input class="input" id="cli-nome" required></div>
+          <div class="campo"><label>Telefone</label><input class="input" id="cli-telefone" placeholder="(11) 99999-9999"></div>
+          <div class="campo"><label>WhatsApp</label><input class="input" id="cli-whatsapp" placeholder="(11) 99999-9999"></div>
+          <div class="campo"><label>E-mail</label><input class="input" type="email" id="cli-email"></div>
+          <div class="campo"><label>CPF/documento</label><input class="input" id="cli-documento"></div>
+          <div class="campo form-full"><label>Endereço</label><input class="input" id="cli-endereco"></div>
+          <div class="campo"><label>Complemento</label><input class="input" id="cli-complemento"></div>
+          <div class="campo"><label>Cidade</label><input class="input" id="cli-cidade"></div>
+          <div class="campo"><label>Estado</label><input class="input" id="cli-estado" maxlength="2" placeholder="SP"></div>
+          <div class="campo"><label>CEP</label><input class="input" id="cli-cep"></div>
+          <div class="campo form-full"><label>Link de localização</label><input class="input" id="cli-localizacao" placeholder="https://maps.google.com/..."></div>
+          <div class="campo form-full"><label>Observações</label><textarea class="input" id="cli-observacoes" rows="3"></textarea></div>
+          <div class="campo form-full"><label>Anexar documentos (opcional)</label><input class="input" type="file" id="cli-arquivos" multiple accept="image/*,.pdf,.txt,.csv,.doc,.docx,.xls,.xlsx"><p class="texto-xs texto-mudo" style="margin-top:6px">Até 3MB por arquivo. Serão vinculados ao cliente após salvar.</p></div>
+        </div>
+      </form>`,
+    rodapeHtml: `<button class="btn btn-secundario" id="btn-cancelar">Cancelar</button><button class="btn btn-primario" id="btn-salvar-cliente">Salvar cliente</button>`,
+  });
+  elemento.querySelector('#btn-cancelar').addEventListener('click', fechar);
+  elemento.querySelector('#btn-salvar-cliente').addEventListener('click', async () => {
+    const nome = elemento.querySelector('#cli-nome').value.trim();
+    if (!nome) { toast('Informe o nome do cliente.', 'erro'); return; }
+    const btnSalvar = elemento.querySelector('#btn-salvar-cliente');
+    btnSalvar.disabled = true;
+    const dados = {
+      nome,
+      telefone: normalizarTelefone(elemento.querySelector('#cli-telefone').value),
+      whatsapp: normalizarTelefone(elemento.querySelector('#cli-whatsapp').value),
+      email: elemento.querySelector('#cli-email').value.trim(),
+      documento: elemento.querySelector('#cli-documento').value.trim(),
+      endereco: elemento.querySelector('#cli-endereco').value.trim(),
+      complemento: elemento.querySelector('#cli-complemento').value.trim(),
+      cidade: elemento.querySelector('#cli-cidade').value.trim(),
+      estado: elemento.querySelector('#cli-estado').value.trim().toUpperCase(),
+      cep: elemento.querySelector('#cli-cep').value.trim(),
+      localizacao: elemento.querySelector('#cli-localizacao').value.trim(),
+      observacoes: elemento.querySelector('#cli-observacoes').value.trim(),
+    };
+    try {
       const criado = await loja.criarCliente(dados);
-      toast('Cliente cadastrado com sucesso.', 'sucesso');
+      const arqs = elemento.querySelector('#cli-arquivos')?.files || [];
+      let anexados = 0, falhas = 0;
+      for (const arq of arqs) {
+        try {
+          await enviarArquivoParaCliente(criado.id, arq);
+          anexados += 1;
+        } catch {
+          falhas += 1;
+        }
+      }
+      toast(falhas ? `Cliente salvo. ${anexados} arquivo(s) anexado(s), ${falhas} falharam.` : 'Cliente cadastrado com sucesso.', falhas ? 'aviso' : 'sucesso');
       fechar();
       aoSalvar?.(criado);
     } catch (err) {
       toast(err.message || 'Não foi possível salvar o cliente.', 'erro');
+      btnSalvar.disabled = false;
     }
   });
 }
@@ -2130,8 +2312,151 @@ function formatarTelefoneExibicao(tel) {
   return tel;
 }
 
-async function renderClienteDetalhe(container, { clienteId, navegarClientes, abrirNovoEmprestimo, abrirRegistrarPagamento }) {
-  container.innerHTML = estadoCarregando();
+function rotuloStatusParc(s) {
+  return { pago: 'Paga', pendente: 'Pendente', parcial: 'Parcial', atrasado: 'Atrasada', 'atrasado-parcial': 'Atrasada (parcial)', 'vence-hoje': 'Vence hoje', cancelado: 'Cancelada' }[s] || s;
+}
+
+function rotuloFormaPg(f) {
+  return { pix: 'PIX', dinheiro: 'Dinheiro', transferencia: 'Transferência', cartao: 'Cartão', outro: 'Outro' }[f] || f;
+}
+
+function formatarTamanho(bytes) {
+  const v = Number(bytes) || 0;
+  if (v < 1024) return `${v} B`;
+  if (v < 1024 * 1024) return `${(v / 1024).toFixed(1)} KB`;
+  return `${(v / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+// Detalhe de um recebimento: data/hora, valor, forma, empréstimo e as
+// parcelas quitadas por ele (uma ou várias — ex.: 3,4,5,6,7 de uma vez).
+function abrirModalDetalhePagamento(pagamento, emprestimos) {
+  const hora = pagamento.criadoEm && String(pagamento.criadoEm).length >= 16
+    ? String(pagamento.criadoEm).slice(11, 16).replace('T', '')
+    : null;
+  const emp = (emprestimos || []).find((e) => String(e.id) === String(pagamento.emprestimoId));
+  const itens = pagamento.itens && pagamento.itens.length
+    ? pagamento.itens
+    : (pagamento.parcelaId != null ? [{ parcelaId: pagamento.parcelaId, numero: null, valor: pagamento.valorRecebido }] : []);
+  const { elemento, fechar } = abrirModal({
+    titulo: 'Detalhe do pagamento',
+    corpoHtml: `
+      <div class="calc-resultado" style="margin-bottom:18px">
+        <div class="item"><div class="rotulo">Data</div><div class="valor">${formatarData(pagamento.data)}${hora ? ` · ${hora}` : ''}</div></div>
+        <div class="item"><div class="rotulo">Valor recebido</div><div class="valor texto-positivo">${formatarMoeda(pagamento.valorRecebido)}</div></div>
+        <div class="item"><div class="rotulo">Forma</div><div class="valor">${rotuloFormaPg(pagamento.forma)}</div></div>
+        <div class="item"><div class="rotulo">Situação</div><div class="valor">Confirmado</div></div>
+        <div class="item"><div class="rotulo">Empréstimo</div><div class="valor">${emp ? `${formatarMoeda(emp.capital)} → ${formatarMoeda(emp.total)}` : `#${pagamento.emprestimoId ?? '—'}`}</div></div>
+        <div class="item"><div class="rotulo">Parcelas</div><div class="valor">${itens.map((i) => i.numero ?? '?').join(', ') || '—'}</div></div>
+      </div>
+      ${itens.length > 1 ? `<div class="tabela-wrap" style="margin-bottom:14px"><table class="tabela"><thead><tr><th>Parcela</th><th>Valor abatido</th></tr></thead><tbody>
+        ${itens.map((i) => `<tr><td>${i.numero ?? '?'}</td><td>${formatarMoeda(i.valor)}</td></tr>`).join('')}
+      </tbody></table></div>` : ''}
+      ${pagamento.observacao ? `<p class="texto-sm texto-mudo">Obs.: ${escapeHtml(pagamento.observacao)}</p>` : ''}`,
+    rodapeHtml: `<button class="btn btn-secundario" id="fechar-pg">Fechar</button>`,
+  });
+  elemento.querySelector('#fechar-pg').addEventListener('click', fechar);
+}
+
+// Ficha completa de um empréstimo: valores, parcelas uma a uma e histórico.
+// Abre da ficha do cliente (empréstimo clicável) — só leitura + ações.
+async function abrirModalDetalheEmprestimo(emprestimoId, { aoAtualizar } = {}) {
+  const { elemento, fechar } = abrirModal({
+    titulo: 'Detalhe do empréstimo',
+    tamanho: 'lg',
+    corpoHtml: `<div class="carregando"><div class="spinner"></div></div>`,
+    rodapeHtml: `<button class="btn btn-secundario" id="fechar-detalhe">Fechar</button>`,
+  });
+  elemento.querySelector('#fechar-detalhe').addEventListener('click', fechar);
+  let emp;
+  let historico = [];
+  try {
+    [emp, historico] = await Promise.all([
+      loja.obterEmprestimo(emprestimoId),
+      loja.listarPagamentos({ emprestimoId }).catch(() => []),
+    ]);
+  } catch (err) {
+    elemento.querySelector('.modal-corpo') && (elemento.querySelector('.modal-corpo').innerHTML =
+      `<div class="alerta alerta-erro">${escapeHtml(err.message || 'Não foi possível carregar.')}</div>`);
+    return;
+  }
+  if (!emp) return fechar();
+  const taxa = emp.capital > 0 ? ((emp.total - emp.capital) / emp.capital) * 100 : 0;
+  const parcelas = emp.parcelas || [];
+  const pagas = parcelas.filter((p) => (p.valor - p.valorPago) <= 0).length;
+  const pendentes = parcelas.filter((p) => (p.valor - p.valorPago) > 0 && !(p.statusCalc || '').startsWith('atrasado')).length;
+  const atrasadas = parcelas.filter((p) => (p.statusCalc || '').startsWith('atrasado')).length;
+  const recebido = historico.reduce((a, p) => a + (p.valorRecebido || 0), 0);
+  const corpo = elemento.querySelector('.modal-corpo') || elemento;
+  corpo.innerHTML = `
+    <div class="calc-resultado" style="margin-bottom:18px">
+      <div class="item"><div class="rotulo">Valor emprestado</div><div class="valor">${formatarMoeda(emp.capital)}</div></div>
+      <div class="item"><div class="rotulo">Total contratado</div><div class="valor">${formatarMoeda(emp.total)}</div></div>
+      <div class="item"><div class="rotulo">Taxa/acréscimo</div><div class="valor">${taxa.toFixed(2)}%</div></div>
+      <div class="item"><div class="rotulo">Situação</div><div class="valor">${escapeHtml(emp.statusCalculado || emp.status)}</div></div>
+      <div class="item"><div class="rotulo">Operação</div><div class="valor">${formatarData(emp.dataOperacao)}</div></div>
+      <div class="item"><div class="rotulo">Parcelas</div><div class="valor">${emp.qtdParcelas} × ${formatarMoeda(parcelas[0]?.valor || 0)}</div></div>
+      <div class="item"><div class="rotulo">Pagas / pendentes / atrasadas</div><div class="valor">${pagas} / ${pendentes} / ${atrasadas}</div></div>
+      <div class="item"><div class="rotulo">Total recebido</div><div class="valor texto-positivo">${formatarMoeda(recebido)}</div></div>
+      <div class="item"><div class="rotulo">Saldo restante</div><div class="valor">${formatarMoeda(emp.saldoRestante)}</div></div>
+    </div>
+    <div class="card-titulo" style="margin-bottom:10px">Parcelas</div>
+    <div class="tabela-wrap" style="margin-bottom:18px"><table class="tabela"><thead><tr><th>Nº</th><th>Vencimento</th><th>Valor</th><th>Pago</th><th>Situação</th></tr></thead><tbody>
+      ${parcelas.map((p) => `<tr><td>${p.numero}</td><td>${formatarData(p.vencimento)}</td><td>${formatarMoeda(p.valor)}</td><td>${formatarMoeda(p.valorPago || 0)}</td><td>${rotuloStatusParc(p.statusCalc || p.status)}</td></tr>`).join('')}
+    </tbody></table></div>
+    <div class="card-titulo" style="margin-bottom:10px">Histórico de pagamentos (${historico.length})</div>
+    ${!historico.length ? '<p class="texto-sm texto-mudo">Nenhum pagamento registrado.</p>' :
+      `<div class="tabela-wrap"><table class="tabela"><thead><tr><th>Data</th><th>Parcelas</th><th>Forma</th><th>Recebido</th></tr></thead><tbody>
+      ${historico.map((p) => `<tr><td>${formatarData(p.data)}</td><td>${(p.itens || []).map((i) => i.numero ?? '?').join(', ') || (p.parcelaId ?? '—')}</td><td>${rotuloFormaPg(p.forma)}</td><td class="texto-positivo" style="font-weight:700">${formatarMoeda(p.valorRecebido)}</td></tr>`).join('')}
+      </tbody></table></div>`}
+    ${emp.observacoes ? `<p class="texto-sm texto-mudo" style="margin-top:12px">Obs.: ${escapeHtml(emp.observacoes)}</p>` : ''}
+    <div class="flex gap-8" style="margin-top:18px;flex-wrap:wrap">
+      <button class="btn btn-primario btn-sm" id="btn-pagar-emp">Registrar pagamento</button>
+      <button class="btn btn-secundario btn-sm" id="btn-editar-emp">Editar empréstimo</button>
+    </div>`;
+  elemento.querySelector('#btn-pagar-emp')?.addEventListener('click', () => {
+    fechar();
+    abrirModalRegistrarPagamento({ clienteId: emp.clienteId, emprestimoId: emp.id, parcelas: parcelas.filter((p) => (p.valor - (p.valorPago || 0)) > 0), aoSalvar: () => { aoAtualizar?.(); } });
+  });
+  elemento.querySelector('#btn-editar-emp')?.addEventListener('click', () => {
+    fechar();
+    abrirModalEditarEmprestimo(emp, { aoSalvar: () => { aoAtualizar?.(); } });
+  });
+}
+
+// Edição com trava de integridade: com pagamentos, só observações;
+// sem pagamentos, data da operação também. Valores e parcelas nunca.
+async function abrirModalEditarEmprestimo(emp, { aoSalvar } = {}) {
+  let temPagamentos = true;
+  try {
+    const hist = await loja.listarPagamentos({ emprestimoId: emp.id }).catch(() => []);
+    temPagamentos = hist.length > 0;
+  } catch { temPagamentos = true; }
+  const { elemento, fechar } = abrirModal({
+    titulo: 'Editar empréstimo',
+    corpoHtml: `
+      ${temPagamentos ? '<div class="alerta alerta-aviso" style="margin-bottom:16px">Este empréstimo já possui pagamentos — só as observações podem ser alteradas, para preservar o histórico.</div>' : ''}
+      <div class="form-grid">
+        ${temPagamentos ? '' : `<div class="campo form-full"><label>Data da operação</label><input class="input" type="date" id="emp-edit-data" value="${escapeHtml(emp.dataOperacao || '')}"></div>`}
+        <div class="campo form-full"><label>Observações</label><textarea class="input" id="emp-edit-obs" rows="3">${escapeHtml(emp.observacoes || '')}</textarea></div>
+      </div>`,
+    rodapeHtml: `<button class="btn btn-secundario" id="cancelar-edemp">Cancelar</button><button class="btn btn-primario" id="salvar-edemp">Salvar</button>`,
+  });
+  elemento.querySelector('#cancelar-edemp').addEventListener('click', fechar);
+  elemento.querySelector('#salvar-edemp').addEventListener('click', async () => {
+    const dados = { observacoes: elemento.querySelector('#emp-edit-obs').value.trim() };
+    if (!temPagamentos) dados.dataOperacao = elemento.querySelector('#emp-edit-data').value;
+    try {
+      await loja.atualizarEmprestimo(emp.id, dados);
+      toast('Empréstimo atualizado.', 'sucesso');
+      fechar();
+      aoSalvar?.();
+    } catch (err) {
+      toast(err.message || 'Não foi possível salvar.', 'erro');
+    }
+  });
+}
+
+async function renderClienteDetalhe(container, { clienteId, navegarClientes, abrirNovoEmprestimo, abrirRegistrarPagamento }) {  container.innerHTML = estadoCarregando();
   let abaAtual = 'resumo';
   let cliente, emprestimos = [], pagamentos = [], notas = [];
 
@@ -2173,6 +2498,7 @@ async function renderClienteDetalhe(container, { clienteId, navegarClientes, abr
         <button class="btn btn-secundario btn-sm" id="btn-whatsapp">${icone('whatsapp', 15)} WhatsApp</button>
         ${cliente.email ? `<a class="btn btn-secundario btn-sm" href="mailto:${cliente.email}">${icone('email', 15)} E-mail</a>` : ''}
         ${cliente.localizacao ? `<a class="btn btn-secundario btn-sm" href="${cliente.localizacao}" target="_blank" rel="noopener">${icone('local', 15)} Localização</a>` : ''}
+        <button class="btn btn-secundario btn-sm" id="btn-editar-cliente">${icone('editar', 15)} Editar cliente</button>
         <button class="btn btn-primario btn-sm" id="btn-novo-emp-cliente">${icone('mais2', 15)} Novo empréstimo</button>
       </div>
     </div>
@@ -2200,6 +2526,7 @@ async function renderClienteDetalhe(container, { clienteId, navegarClientes, abr
     container.querySelector('#btn-ligar').addEventListener('click', () => { window.location.href = `tel:${cliente.telefone}`; });
     container.querySelector('#btn-whatsapp').addEventListener('click', () => { window.open(linkWhatsapp(cliente.whatsapp || cliente.telefone, `Olá, ${cliente.nome.split(' ')[0]}!`), '_blank'); });
     container.querySelector('#btn-novo-emp-cliente').addEventListener('click', () => abrirNovoEmprestimo({ clientePreSelecionado: cliente, aoSalvar: carregar }));
+    container.querySelector('#btn-editar-cliente').addEventListener('click', () => abrirModalEditarCliente(cliente, { aoSalvar: carregar }));
 
     renderAba();
   }
@@ -2215,17 +2542,24 @@ async function renderClienteDetalhe(container, { clienteId, navegarClientes, abr
     } else if (abaAtual === 'emprestimos') {
       alvo.innerHTML = !emprestimos.length ? estadoVazio({ iconeNome: 'emprestimos', titulo: 'Nenhum empréstimo', descricao: 'Este cliente ainda não possui operações.' }) :
         emprestimos.map((e) => `
-        <div class="lista-card">
+        <div class="lista-card" data-emp="${e.id}" style="cursor:pointer" title="Abrir detalhe">
           <div class="flex justify-between items-center">
-            <div><div style="font-weight:700">${formatarMoeda(e.capital)} → ${formatarMoeda(e.total)}</div><div class="texto-xs texto-mudo">Operação em ${formatarData(e.dataOperacao)}</div></div>
+            <div><div style="font-weight:700">${formatarMoeda(e.capital)} → ${formatarMoeda(e.total)}</div><div class="texto-xs texto-mudo">Operação em ${formatarData(e.dataOperacao)} · toque para detalhar</div></div>
             ${badgeStatus(rotuloStatusEmp(e.statusCalculado), corStatusEmp(e.statusCalculado))}
           </div>
         </div>`).join('');
+      alvo.querySelectorAll('[data-emp]').forEach((el) => el.addEventListener('click', () => {
+        abrirModalDetalheEmprestimo(el.dataset.emp, { aoAtualizar: carregar });
+      }));
     } else if (abaAtual === 'pagamentos') {
       alvo.innerHTML = !pagamentos.length ? estadoVazio({ iconeNome: 'financeiro', titulo: 'Nenhum pagamento', descricao: 'Nenhum pagamento registrado ainda.' }) :
         `<div class="tabela-wrap card" style="padding:0"><table class="tabela"><thead><tr><th>Data</th><th>Forma</th><th>Esperado</th><th>Recebido</th></tr></thead><tbody>
-        ${pagamentos.map((p) => `<tr><td>${formatarData(p.data)}</td><td>${rotuloForma(p.forma)}</td><td>${formatarMoeda(p.valorEsperado)}</td><td style="font-weight:700" class="texto-positivo">${formatarMoeda(p.valorRecebido)}</td></tr>`).join('')}
+        ${pagamentos.map((p) => `<tr data-pg="${p.id}" style="cursor:pointer" title="Abrir detalhe"><td>${formatarData(p.data)}</td><td>${rotuloForma(p.forma)}</td><td>${formatarMoeda(p.valorEsperado)}</td><td style="font-weight:700" class="texto-positivo">${formatarMoeda(p.valorRecebido)}</td></tr>`).join('')}
         </tbody></table></div>`;
+      alvo.querySelectorAll('[data-pg]').forEach((el) => el.addEventListener('click', () => {
+        const pg = pagamentos.find((x) => String(x.id) === el.dataset.pg);
+        if (pg) abrirModalDetalhePagamento(pg, emprestimos);
+      }));
     } else if (abaAtual === 'anotacoes') {
       alvo.innerHTML = `
         <button class="btn btn-secundario btn-sm" id="btn-nova-nota-cliente" style="margin-bottom:14px">${icone('mais2', 14)} Nova anotação</button>
@@ -2246,10 +2580,69 @@ async function renderClienteDetalhe(container, { clienteId, navegarClientes, abr
         });
       });
     } else if (abaAtual === 'arquivos') {
-      alvo.innerHTML = estadoVazio({
-        iconeNome: 'arquivo', titulo: 'Envio de arquivos pendente de backend',
-        descricao: 'O upload privado de documentos, fotos, comprovantes e contratos deste cliente será feito via POST /api/clientes/:id/arquivos assim que o endpoint estiver disponível no servidor (armazenamento privado já previsto na infraestrutura).',
-      });
+      alvo.innerHTML = `<div class="card"><div class="carregando"><div class="spinner"></div></div></div>`;
+      (async () => {
+        let arquivos = [];
+        try {
+          arquivos = await loja.listarArquivos(clienteId);
+        } catch (err) {
+          alvo.innerHTML = estadoVazio({ iconeNome: 'arquivo', titulo: 'Não foi possível carregar os arquivos', descricao: err.message });
+          return;
+        }
+        alvo.innerHTML = `
+        <div class="card" style="margin-bottom:14px">
+          <div class="card-titulo" style="margin-bottom:10px">Anexar arquivo</div>
+          <div class="flex gap-8" style="flex-wrap:wrap;align-items:flex-end">
+            <div class="campo" style="flex:1;min-width:200px;margin-bottom:0"><input class="input" type="file" id="arq-input" accept="image/*,.pdf,.txt,.csv,.doc,.docx,.xls,.xlsx"></div>
+            <button class="btn btn-primario btn-sm" id="btn-enviar-arq">${icone('upload', 15)} Enviar</button>
+          </div>
+          <p class="texto-xs texto-mudo" style="margin-top:8px">Documentos, imagens, comprovantes e contratos. Até 3MB por arquivo.</p>
+        </div>
+        ${!arquivos.length ? estadoVazio({ iconeNome: 'arquivo', titulo: 'Nenhum arquivo', descricao: 'Anexe o primeiro documento deste cliente acima.' }) :
+          `<div class="tabela-wrap card" style="padding:0"><table class="tabela"><thead><tr><th>Arquivo</th><th>Tamanho</th><th>Data</th><th></th></tr></thead><tbody>
+          ${arquivos.map((a) => `<tr><td style="font-weight:600">${escapeHtml(a.nome)}</td><td class="texto-mudo">${formatarTamanho(a.tamanho)}</td><td class="texto-mudo">${formatarData((a.criadoEm || '').slice(0, 10))}</td>
+            <td style="white-space:nowrap"><button class="btn btn-secundario btn-sm" data-arq-ver="${a.id}">${icone('olho', 14)} Ver</button>
+            <button class="btn btn-secundario btn-sm" data-arq-baixar="${a.id}">${icone('download', 14)} Baixar</button>
+            <button class="btn btn-secundario btn-sm" data-arq-del="${a.id}">${icone('lixo', 14)}</button></td></tr>`).join('')}
+          </tbody></table></div>`}`;
+        alvo.querySelector('#btn-enviar-arq').addEventListener('click', async () => {
+          const input = alvo.querySelector('#arq-input');
+          const arq = input.files && input.files[0];
+          if (!arq) return toast('Selecione um arquivo.', 'erro');
+          try {
+            await enviarArquivoParaCliente(clienteId, arq);
+            toast('Arquivo anexado.', 'sucesso');
+            carregar();
+          } catch (err) {
+            toast(err.message || 'Não foi possível enviar.', 'erro');
+          }
+        });
+        const porId = (id) => arquivos.find((x) => String(x.id) === String(id));
+        alvo.querySelectorAll('[data-arq-ver]').forEach((b) => b.addEventListener('click', async () => {
+          try {
+            const url = await loja.baixarArquivo(clienteId, porId(b.dataset.arqVer));
+            window.open(url, '_blank', 'noopener');
+          } catch (err) { toast(err.message || 'Não foi possível abrir.', 'erro'); }
+        }));
+        alvo.querySelectorAll('[data-arq-baixar]').forEach((b) => b.addEventListener('click', async () => {
+          try {
+            const a = porId(b.dataset.arqBaixar);
+            const url = await loja.baixarArquivo(clienteId, a);
+            const link = document.createElement('a');
+            link.href = url; link.download = a.nome; link.click();
+            setTimeout(() => URL.revokeObjectURL(url), 30000);
+          } catch (err) { toast(err.message || 'Não foi possível baixar.', 'erro'); }
+        }));
+        alvo.querySelectorAll('[data-arq-del]').forEach((b) => b.addEventListener('click', async () => {
+          const ok = await confirmarAcao({ titulo: 'Excluir arquivo', mensagem: 'Deseja excluir este arquivo? Esta ação não pode ser desfeita.', textoConfirmar: 'Excluir', perigo: true });
+          if (!ok) return;
+          try {
+            await loja.excluirArquivo(clienteId, b.dataset.arqDel);
+            toast('Arquivo excluído.', 'sucesso');
+            carregar();
+          } catch (err) { toast(err.message || 'Não foi possível excluir.', 'erro'); }
+        }));
+      })();
     }
   }
 
@@ -2258,12 +2651,12 @@ async function renderClienteDetalhe(container, { clienteId, navegarClientes, abr
   }
   function rotuloStatusEmp(s) { return { andamento: 'Em andamento', quitado: 'Quitado', atraso: 'Em atraso', cancelado: 'Cancelado' }[s] || s; }
   function corStatusEmp(s) { return { andamento: 'azul', quitado: 'verde', atraso: 'vermelho', cancelado: 'cinza' }[s] || 'cinza'; }
-  function rotuloForma(f) { return { pix: 'PIX', dinheiro: 'Dinheiro', transferencia: 'Transferência', outro: 'Outro' }[f] || f; }
+  function rotuloForma(f) { return { pix: 'PIX', dinheiro: 'Dinheiro', transferencia: 'Transferência', cartao: 'Cartão', outro: 'Outro' }[f] || f; }
 
   await carregar();
 }
 
-  Object.assign(window.CP, { abrirModalNovoCliente, renderClientes, renderClienteDetalhe });
+  Object.assign(window.CP, { abrirModalNovoCliente, abrirModalEditarCliente, renderClientes, renderClienteDetalhe });
 })();
 window.CP = window.CP || {};
 (function () {
@@ -2551,50 +2944,108 @@ async function renderEmprestimos(container, { abrirRegistrarPagamento, navegarCl
   await carregar();
 }
 
-function abrirModalRegistrarPagamento({ clienteId, emprestimoId, parcelaId, parcela, aoSalvar }) {
-  const restante = parcela ? parcela.valor - (parcela.valorPago || 0) : 0;
+function abrirModalRegistrarPagamento({ clienteId, emprestimoId, parcelaId, parcela, parcelas, aoSalvar }) {
+  // Aceita parcela única (legado: cobranças chamam com parcelaId+parcela) ou
+  // lista de parcelas (ficha do empréstimo). Itens marcados compõem UM
+  // recebimento; valores editáveis por parcela (parcial/antecipação).
   const { elemento, fechar } = abrirModal({
     titulo: 'Registrar pagamento',
-    corpoHtml: `
-      <div class="calc-resultado" style="margin-bottom:18px">
-        <div class="item"><div class="rotulo">Valor esperado</div><div class="valor">${formatarMoeda(parcela?.valor || 0)}</div></div>
-        <div class="item"><div class="rotulo">Restante</div><div class="valor">${formatarMoeda(restante)}</div></div>
-      </div>
-      <div class="form-grid">
-        <div class="campo form-full"><label>Valor recebido (R$) *</label><input class="input" id="pg-valor" value="${(restante / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}"></div>
-        <div class="campo"><label>Data</label><input class="input" type="date" id="pg-data" value="${dataParaISO(hoje())}"></div>
-        <div class="campo"><label>Forma</label>
-          <select class="select" id="pg-forma"><option value="pix">PIX</option><option value="dinheiro">Dinheiro</option><option value="transferencia">Transferência</option><option value="outro">Outro</option></select>
-        </div>
-        <div class="campo form-full"><label>Observação</label><input class="input" id="pg-obs"></div>
-      </div>`,
+    tamanho: 'lg',
+    corpoHtml: `<div class="carregando"><div class="spinner"></div></div>`,
     rodapeHtml: `<button class="btn btn-secundario" id="cancelar-pg">Cancelar</button><button class="btn btn-primario" id="salvar-pg">Registrar</button>`,
   });
-  mascaraMoedaInput(elemento.querySelector('#pg-valor'));
   elemento.querySelector('#cancelar-pg').addEventListener('click', fechar);
-  elemento.querySelector('#salvar-pg').addEventListener('click', async () => {
-    const btnSalvar = elemento.querySelector('#salvar-pg');
-    if (btnSalvar.disabled) return; // trava de duplo clique: 2º clique nem chega a gerar nova tentativa
-    const valorRecebido = reaisParaCentavos(elemento.querySelector('#pg-valor').value);
-    if (valorRecebido <= 0) return toast('Informe o valor recebido.', 'erro');
-    const chaveIdempotencia = gerarChaveIdempotencia();
-    btnSalvar.disabled = true;
-    try {
-      await loja.registrarPagamento({
-        clienteId, emprestimoId, parcelaId, valorRecebido,
-        data: elemento.querySelector('#pg-data').value, forma: elemento.querySelector('#pg-forma').value,
-        observacao: elemento.querySelector('#pg-obs').value.trim(),
-        chaveIdempotencia,
-      });
-      const status = valorRecebido >= restante ? 'Pago' : 'Pagamento parcial registrado';
-      toast(`${status}: ${formatarMoeda(valorRecebido)} de ${formatarMoeda(parcela?.valor || 0)}.`, 'sucesso');
-      fechar();
-      aoSalvar?.();
-    } catch (err) {
-      toast(err.message || 'Não foi possível registrar o pagamento.', 'erro');
-      btnSalvar.disabled = false;
+
+  (async () => {
+    let lista = Array.isArray(parcelas) && parcelas.length ? parcelas.slice() : (parcela ? [parcela] : []);
+    if (!lista.length && emprestimoId) {
+      try {
+        const emp = await loja.obterEmprestimo(emprestimoId);
+        lista = (emp.parcelas || []).filter((p) => (p.valor - (p.valorPago || 0)) > 0);
+      } catch (err) {
+        elemento.querySelector('.modal-corpo').innerHTML = `<div class="alerta alerta-erro">${escapeHtml(err.message || 'Não foi possível carregar as parcelas.')}</div>`;
+        return;
+      }
     }
-  });
+    lista = lista.filter((p) => (p.valor - (p.valorPago || 0)) > 0);
+    if (!lista.length) {
+      elemento.querySelector('.modal-corpo').innerHTML = `<div class="alerta alerta-aviso">Não há parcelas pendentes.</div>`;
+      return;
+    }
+    const corpo = elemento.querySelector('.modal-corpo');
+    corpo.innerHTML = `
+      <div class="texto-sm texto-mudo" style="margin-bottom:10px">Marque as parcelas deste recebimento (uma ou várias) e ajuste os valores.</div>
+      <div class="tabela-wrap" style="margin-bottom:14px"><table class="tabela"><thead><tr><th></th><th>Nº</th><th>Vencimento</th><th>Saldo</th><th>Valor</th></tr></thead><tbody>
+        ${lista.map((p) => {
+          const saldo = p.valor - (p.valorPago || 0);
+          const marcado = !parcelaId || String(p.id) === String(parcelaId) ? ' checked' : '';
+          return `<tr><td><input type="checkbox" data-pg-check="${p.id}"${marcado}></td>
+            <td>${p.numero}</td><td>${formatarData(p.vencimento)}</td><td>${formatarMoeda(saldo)}</td>
+            <td><input class="input" style="max-width:130px" data-pg-valor="${p.id}" value="${(saldo / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}"></td></tr>`;
+        }).join('')}
+      </tbody></table></div>
+      <div class="calc-resultado" style="margin-bottom:18px">
+        <div class="item"><div class="rotulo">Total do recebimento</div><div class="valor" id="pg-total">—</div></div>
+      </div>
+      <div class="form-grid">
+        <div class="campo"><label>Data</label><input class="input" type="date" id="pg-data" value="${dataParaISO(hoje())}"></div>
+        <div class="campo"><label>Forma</label>
+          <select class="select" id="pg-forma"><option value="pix">PIX</option><option value="dinheiro">Dinheiro</option><option value="transferencia">Transferência</option><option value="cartao">Cartão</option><option value="outro">Outro</option></select>
+        </div>
+        <div class="campo form-full"><label>Observação</label><input class="input" id="pg-obs"></div>
+      </div>`;
+    const porId = new Map(lista.map((p) => [String(p.id), p]));
+    function recalcular() {
+      let total = 0;
+      corpo.querySelectorAll('[data-pg-check]').forEach((chk) => {
+        if (!chk.checked) return;
+        const input = corpo.querySelector(`[data-pg-valor="${chk.dataset.pgCheck}"]`);
+        const p = porId.get(String(chk.dataset.pgCheck));
+        let v = reaisParaCentavos(input.value);
+        const saldo = p.valor - (p.valorPago || 0);
+        if (v > saldo) { v = saldo; input.value = (saldo / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2 }); }
+        if (v < 0) { v = 0; input.value = '0,00'; }
+        total += v;
+      });
+      corpo.querySelector('#pg-total').textContent = formatarMoeda(total);
+      return total;
+    }
+    corpo.querySelectorAll('[data-pg-check],[data-pg-valor]').forEach((el) => {
+      el.addEventListener('change', recalcular);
+      el.addEventListener('input', () => { if (el.hasAttribute('data-pg-valor')) recalcular(); });
+    });
+    recalcular();
+
+    elemento.querySelector('#salvar-pg').addEventListener('click', async () => {
+      const btnSalvar = elemento.querySelector('#salvar-pg');
+      if (btnSalvar.disabled) return;
+      const itens = [];
+      corpo.querySelectorAll('[data-pg-check]').forEach((chk) => {
+        if (!chk.checked) return;
+        const input = corpo.querySelector(`[data-pg-valor="${chk.dataset.pgCheck}"]`);
+        const v = reaisParaCentavos(input.value);
+        if (v > 0) itens.push({ parcelaId: chk.dataset.pgCheck, valor: v });
+      });
+      if (!itens.length) return toast('Marque ao menos uma parcela com valor.', 'erro');
+      const total = itens.reduce((a, i) => a + i.valor, 0);
+      const chaveIdempotencia = gerarChaveIdempotencia();
+      btnSalvar.disabled = true;
+      try {
+        await loja.registrarPagamento({
+          clienteId, emprestimoId, itens, valorRecebido: total,
+          data: corpo.querySelector('#pg-data').value, forma: corpo.querySelector('#pg-forma').value,
+          observacao: corpo.querySelector('#pg-obs').value.trim(),
+          chaveIdempotencia,
+        });
+        toast(`Recebimento registrado: ${formatarMoeda(total)} em ${itens.length} parcela(s).`, 'sucesso');
+        fechar();
+        aoSalvar?.();
+      } catch (err) {
+        toast(err.message || 'Não foi possível registrar o pagamento.', 'erro');
+        btnSalvar.disabled = false;
+      }
+    });
+  })();
 }
 
   Object.assign(window.CP, { abrirModalNovoEmprestimo, renderEmprestimos, abrirModalRegistrarPagamento });
@@ -4075,7 +4526,7 @@ async function renderConfiguracoes(container, { usuario, aoSair, aoAtualizarUsua
   const {
     auth, obterToken, limparToken, ErroAPI, loja,
     renderLogin, renderRegistro, renderEsqueciSenha, renderDashboard,
-    renderClientes, renderClienteDetalhe, abrirModalNovoCliente,
+    renderClientes, renderClienteDetalhe, abrirModalNovoCliente, abrirModalEditarCliente,
     renderEmprestimos, abrirModalNovoEmprestimo, abrirModalRegistrarPagamento,
     renderFinanceiro, abrirModalNovaMovimentacao, renderCobrancas, renderAtrasos,
     renderLembretes, renderMetas, renderSimulador, renderNotas, abrirModalNovaNota,
