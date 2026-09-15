@@ -1089,24 +1089,6 @@ class Loja extends EventTarget {
     this.emitir('mudou');
     return atualizado;
   }
-  async listarTemplates() {
-    if (this.demoAtivo) {
-      this.demo.templates = this.demo.templates || null;
-      return this.demo.templates || null;
-    }
-    return api.get('/lembretes/templates');
-  }
-  async salvarTemplate(chave, texto) {
-    if (this.demoAtivo) {
-      this.demo.templatesCustom = this.demo.templatesCustom || {};
-      this.demo.templatesCustom[chave] = texto;
-      this.emitir('mudou');
-      return { ok: true, chave, texto };
-    }
-    const salvo = await api.put(`/lembretes/templates/${chave}`, { texto });
-    this.emitir('mudou');
-    return salvo;
-  }
   async excluirLembrete(id) {
     if (this.demoAtivo) {
       this.demo.lembretes = this.demo.lembretes.filter((l) => l.id !== id);
@@ -3607,25 +3589,10 @@ async function renderAtrasos(container, { navegarClienteDetalhe, abrirRegistrarP
 window.CP = window.CP || {};
 (function () {
   'use strict';
-  const { loja, ErroAPI, formatarMoeda, formatarData, dataParaISO, hoje, somarDias, escapeHtml, icone, estadoCarregando, estadoVazio, badgeStatus, toast, abrirModal, confirmarAcao, linkWhatsapp } = window.CP;
+  const { loja, ErroAPI, formatarMoeda, formatarData, dataParaISO, hoje, escapeHtml, icone, estadoCarregando, estadoVazio, badgeStatus, toast, abrirModal, confirmarAcao } = window.CP;
 
 const TIPOS = { cobranca: 'Cobrança', cliente: 'Cliente', operacao: 'Operação', reuniao: 'Reunião', pessoal: 'Lembrete pessoal' };
 const PRIORIDADES = { alta: 'vermelho', media: 'amarelo', baixa: 'cinza' };
-
-const TEMPLATES_PADRAO_LOCAL = [
-  { chave: 'antes-vencimento', titulo: 'Lembrete antes do vencimento', texto: 'Olá, {cliente}! Passando para lembrar que sua parcela {parcela}, no valor de {valor}, vence em {vencimento}. Qualquer dúvida, estou à disposição.' },
-  { chave: 'vence-hoje', titulo: 'Vence hoje', texto: 'Olá, {cliente}! Sua parcela {parcela}, no valor de {valor}, vence hoje ({vencimento}). Aguardo seu pagamento. Obrigado!' },
-  { chave: 'atrasada', titulo: 'Parcela atrasada', texto: 'Olá, {cliente}! Verifiquei que sua parcela {parcela}, no valor de {valor}, venceu em {vencimento} e ainda está em aberto. Podemos regularizar hoje?' },
-  { chave: 'amigavel', titulo: 'Cobrança amigável', texto: 'Oi, {cliente}! Tudo bem? Só um toque carinhoso sobre a parcela {parcela} de {valor} (vencimento {vencimento}). Me avise quando puder acertar!' },
-];
-
-function aplicarTemplate(texto, vars) {
-  return String(texto || '')
-    .replaceAll('{cliente}', vars.cliente || '')
-    .replaceAll('{valor}', vars.valor || '')
-    .replaceAll('{vencimento}', vars.vencimento || '')
-    .replaceAll('{parcela}', vars.parcela || '');
-}
 
 function abrirModalNovoLembrete({ aoSalvar } = {}) {
   const { elemento, fechar } = abrirModal({
@@ -3760,15 +3727,9 @@ async function renderLembretes(container) {
       return;
     }
     render(lista);
-    // Chegada via notificação de cobrança: destaca o lembrete e já abre o WhatsApp.
+    // Chegada via notificação: apenas destaca o lembrete correspondente.
     if (lembreteDestaqueId) {
-      const alvo = lista.find((x) => String(x.id) === String(lembreteDestaqueId));
-      const abrir = abrirWhatsAppAposNavegar;
       lembreteDestaqueId = null;
-      abrirWhatsAppAposNavegar = false;
-      if (alvo && alvo.cobranca && alvo.cobranca.parcela && !alvo.concluido && abrir) {
-        await abrirWhatsAppLembrete(alvo);
-      }
     }
   }
 
@@ -3779,7 +3740,6 @@ async function renderLembretes(container) {
     <div class="pagina-cabecalho">
       <div><h1 class="pagina-titulo">Lembretes</h1><p class="pagina-subtitulo">${pendentes.length} pendente${pendentes.length === 1 ? '' : 's'}.</p></div>
       <div class="flex gap-8" style="flex-wrap:wrap">
-        <button class="btn btn-secundario" id="btn-templates">${icone('whatsapp', 16)} Templates do WhatsApp</button>
         <button class="btn btn-primario" id="btn-novo-lembrete">${icone('mais2', 17)} Novo lembrete</button>
       </div>
     </div>
@@ -3798,8 +3758,6 @@ async function renderLembretes(container) {
       alvoC.innerHTML = concluidos.map((l) => linhaLembrete(l)).join('');
       vincularAcoes(alvoC, carregar);
     }
-
-    container.querySelector('#btn-templates').addEventListener('click', () => abrirModalTemplates(carregar));
 
     container.querySelector('#btn-novo-lembrete').addEventListener('click', () => abrirModalNovoLembrete({ aoSalvar: carregar }));
   }
@@ -3823,8 +3781,7 @@ async function renderLembretes(container) {
         ${badgeStatus(l.prioridade === 'alta' ? 'Alta' : l.prioridade === 'media' ? 'Média' : 'Baixa', PRIORIDADES[l.prioridade] || 'cinza')}
       </div>
       ${!l.concluido ? `<div class="flex gap-8" style="margin-top:10px;flex-wrap:wrap">
-        ${cob ? `<button class="btn btn-primario btn-sm" data-whatsapp="${l.id}">${icone('whatsapp', 14)} WhatsApp</button>
-        <button class="btn btn-secundario btn-sm" data-adiar="${l.id}">Adiar</button>` : ''}
+        ${cob ? `<button class="btn btn-secundario btn-sm" data-adiar="${l.id}">Adiar</button>` : ''}
         <button class="btn btn-secundario btn-sm" data-concluir="${l.id}">${icone('check', 14)} Concluir</button>
         <button class="btn btn-perigo btn-sm" data-excluir="${l.id}">Excluir</button></div>` : ''}
     </div>`;
@@ -3832,71 +3789,6 @@ async function renderLembretes(container) {
 
   // Estado vivo da parcela (anti-cobrança enganosa): lê o saldo atual do
   // empréstimo antes de qualquer ação de cobrança.
-  async function estadoAtualParcela(lembrete) {
-    const cob = lembrete.cobranca;
-    if (!cob || !cob.parcela || !cob.emprestimoId) return { ok: false, motivo: 'sem vínculo' };
-    try {
-      const emp = await loja.obterEmprestimo(cob.emprestimoId);
-      const p = (emp.parcelas || []).find((x) => String(x.id) === String(cob.parcela.id));
-      if (!p) return { ok: false, motivo: 'Parcela não encontrada.' };
-      const saldo = p.valor - (p.valorPago || 0);
-      if (saldo <= 0) return { ok: false, motivo: 'paga', parcela: p, emprestimo: emp };
-      return { ok: true, parcela: p, emprestimo: emp, saldo };
-    } catch (err) {
-      return { ok: false, motivo: err.message || 'Não foi possível verificar a parcela.' };
-    }
-  }
-
-  async function abrirWhatsAppLembrete(lembrete) {
-    const cob = lembrete.cobranca;
-    if (!cob || !cob.parcela) return toast('Este lembrete não tem cobrança vinculada.', 'erro');
-    const estado = await estadoAtualParcela(lembrete);
-    if (!estado.ok && estado.motivo === 'paga') {
-      toast('Esta parcela já foi paga.', 'info');
-      const ok = await confirmarAcao({ titulo: 'Parcela já paga', mensagem: 'Esta parcela já foi quitada. Deseja abrir o WhatsApp mesmo assim?', textoConfirmar: 'Abrir mesmo assim', perigo: false });
-      if (!ok) return;
-    } else if (!estado.ok) {
-      return toast(estado.motivo || 'Não foi possível verificar a parcela.', 'erro');
-    }
-    const numero = cob.cliente?.whatsapp || cob.cliente?.telefone;
-    if (!numero) return toast('Cliente sem WhatsApp/telefone cadastrado.', 'erro');
-    // Recarrega nome/telefone atuais do cliente para a mensagem.
-    let nomeCli = cob.cliente?.nome || '';
-    try {
-      const cli = await loja.obterCliente(cob.cliente.id);
-      if (cli) { nomeCli = cli.nome || nomeCli; }
-    } catch { /* mantém o nome do vínculo */ }
-    const p = (estado.ok && estado.parcela) || cob.parcela;
-    const vars = {
-      cliente: String(nomeCli).split(' ')[0] || nomeCli,
-      valor: formatarMoeda(estado.ok ? (estado.saldo ?? p.valor) : p.valor),
-      vencimento: formatarData(p.vencimento),
-      parcela: `${p.numero}/${p.total ?? p.totalParcelas ?? '?'}`,
-    };
-    let templates = null;
-    try { templates = await loja.listarTemplates(); } catch { templates = null; }
-    const lista = templates || TEMPLATES_PADRAO_LOCAL;
-    const { elemento, fechar } = abrirModal({
-      titulo: 'Cobrança via WhatsApp',
-      corpoHtml: `
-        <p class="texto-sm texto-mudo" style="margin-bottom:12px">Escolha o modelo. As variáveis são preenchidas com os dados reais.</p>
-        <div class="campo"><label>Modelo</label><select class="select" id="wa-tpl">${lista.map((t) => `<option value="${t.chave}">${escapeHtml(t.titulo)}</option>`).join('')}</select></div>
-        <div class="campo"><label>Mensagem</label><textarea class="input" id="wa-msg" rows="5"></textarea></div>`,
-      rodapeHtml: `<button class="btn btn-secundario" id="wa-cancelar">Cancelar</button><button class="btn btn-primario" id="wa-abrir">Abrir WhatsApp</button>`,
-    });
-    const sel = elemento.querySelector('#wa-tpl');
-    const area = elemento.querySelector('#wa-msg');
-    const porChave = new Map(lista.map((t) => [t.chave, t.texto]));
-    const atualizar = () => { area.value = aplicarTemplate(porChave.get(sel.value), vars); };
-    sel.addEventListener('change', atualizar);
-    atualizar();
-    elemento.querySelector('#wa-cancelar').addEventListener('click', fechar);
-    elemento.querySelector('#wa-abrir').addEventListener('click', () => {
-      window.open(linkWhatsapp(numero, area.value), '_blank', 'noopener');
-      fechar();
-    });
-  }
-
   function abrirModalAdiar(lembrete, aoSalvar) {
     const { elemento, fechar } = abrirModal({
       titulo: 'Adiar lembrete',
@@ -3935,48 +3827,11 @@ async function renderLembretes(container) {
     });
   }
 
-  function abrirModalTemplates(aoSalvar) {
-    (async () => {
-      let lista;
-      try {
-        lista = await loja.listarTemplates();
-      } catch (err) {
-        toast(err.message || 'Não foi possível carregar.', 'erro');
-        return;
-      }
-      lista = lista || TEMPLATES_PADRAO_LOCAL;
-      const { elemento, fechar } = abrirModal({
-        titulo: 'Templates do WhatsApp',
-        tamanho: 'lg',
-        corpoHtml: `
-          <p class="texto-sm texto-mudo" style="margin-bottom:14px">Variáveis: {cliente} {valor} {vencimento} {parcela}. Suas edições são salvas por usuário.</p>
-          ${lista.map((t) => `
-          <div class="campo"><label>${escapeHtml(t.titulo)} ${t.personalizado ? '<span class="texto-xs texto-mudo">(personalizado)</span>' : ''}</label>
-          <textarea class="input" rows="3" data-tpl="${t.chave}">${escapeHtml(t.texto)}</textarea></div>`).join('')}`,
-        rodapeHtml: `<button class="btn btn-secundario" id="tpl-cancelar">Fechar</button><button class="btn btn-primario" id="tpl-salvar">Salvar modelos</button>`,
-      });
-      elemento.querySelector('#tpl-cancelar').addEventListener('click', fechar);
-      elemento.querySelector('#tpl-salvar').addEventListener('click', async () => {
-        try {
-          for (const area of elemento.querySelectorAll('[data-tpl]')) {
-            await loja.salvarTemplate(area.dataset.tpl, area.value);
-          }
-          toast('Templates salvos.', 'sucesso');
-          fechar(); aoSalvar?.();
-        } catch (err) { toast(err.message || 'Não foi possível salvar.', 'erro'); }
-      });
-    })();
-  }
-
   function vincularAcoes(alvo, aoRecarregar) {
     alvo.querySelectorAll('[data-concluir]').forEach((b) => b.addEventListener('click', async () => { await loja.concluirLembrete(b.dataset.concluir); toast('Lembrete concluído.', 'sucesso'); aoRecarregar(); }));
     alvo.querySelectorAll('[data-excluir]').forEach((b) => b.addEventListener('click', async () => {
       const ok = await confirmarAcao({ titulo: 'Excluir lembrete', mensagem: 'Deseja realmente excluir este lembrete?', textoConfirmar: 'Excluir' });
       if (ok) { await loja.excluirLembrete(b.dataset.excluir); toast('Lembrete excluído.', 'sucesso'); aoRecarregar(); }
-    }));
-    alvo.querySelectorAll('[data-whatsapp]').forEach((b) => b.addEventListener('click', async () => {
-      const l = (alvo._lembretes || []).find((x) => String(x.id) === String(b.dataset.whatsapp));
-      if (l) await abrirWhatsAppLembrete(l);
     }));
     alvo.querySelectorAll('[data-adiar]').forEach((b) => b.addEventListener('click', () => {
       const l = (alvo._lembretes || []).find((x) => String(x.id) === String(b.dataset.adiar));
@@ -3990,15 +3845,13 @@ async function renderLembretes(container) {
   // Estado da chegada via notificação — declarações no escopo do IIFE
   // (não dentro de renderLembretes), pois o Object.assign abaixo as expõe.
   let lembreteDestaqueId = null;
-  let abrirWhatsAppAposNavegar = false;
 
   function irParaLembretesTela() {
     window.location.hash = '#/lembretes';
   }
 
-  function irParaLembreteViaNotificacao(lembreteId, comWhatsApp) {
+  function irParaLembreteViaNotificacao(lembreteId) {
     lembreteDestaqueId = lembreteId;
-    abrirWhatsAppAposNavegar = !!comWhatsApp;
     irParaLembretesTela();
   }
 
