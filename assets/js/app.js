@@ -3640,26 +3640,42 @@ function abrirModalNovoLembrete({ aoSalvar } = {}) {
         <div class="campo form-full"><label>Alerta</label><select class="select" id="lb-alerta"><option value="no-dia">No dia</option><option value="1-dia">1 dia antes</option><option value="3-dias">3 dias antes</option><option value="personalizado">Personalizado</option></select></div>
         <div id="lb-cobranca" class="oculto" style="display:contents">
           <div class="campo form-full"><label>Cliente</label><select class="select" id="lb-cliente"><option value="">Carregando clientes...</option></select></div>
-          <div class="campo form-full"><label>Cobrança / parcela</label><select class="select" id="lb-parcela"><option value="">Selecione um cliente primeiro</option></select></div>
+          <div class="campo form-full" id="lb-linha-parcela"><label>Cobrança / parcela</label><select class="select" id="lb-parcela"><option value="">Selecione um cliente primeiro</option></select></div>
         </div>
       </div>`,
     rodapeHtml: `<button class="btn btn-secundario" id="cancelar-lb">Cancelar</button><button class="btn btn-primario" id="salvar-lb">Salvar</button>`,
   });
   elemento.querySelector('#cancelar-lb').addEventListener('click', fechar);
   const selTipo = elemento.querySelector('#lb-tipo');
-  const selCliente =elemento.querySelector('#lb-cliente');
+  const selCliente = elemento.querySelector('#lb-cliente');
   const selParcela = elemento.querySelector('#lb-parcela');
+  const secCobranca = elemento.querySelector('#lb-cobranca');
+  const linhaParcela = elemento.querySelector('#lb-linha-parcela');
   let parcelasCliente = [];
+  let clientesCarregados = false;
 
-  function ehCobranca() { return selTipo.value === 'cobranca'; }
+  function modoCampos() {
+    if (selTipo.value === 'cobranca') return 'cobranca';
+    if (selTipo.value === 'cliente') return 'cliente';
+    return 'simples';
+  }
+
+  function atualizarVisibilidade() {
+    const modo = modoCampos();
+    secCobranca.classList.toggle('oculto', modo === 'simples');
+    if (linhaParcela) linhaParcela.classList.toggle('oculto', modo !== 'cobranca');
+    if (modo !== 'simples' && !clientesCarregados) carregarClientes();
+  }
 
   async function carregarClientes() {
     try {
       const clientes = await loja.listarClientes({});
       selCliente.innerHTML = '<option value="">Selecione...</option>' +
         clientes.filter((c) => c.status !== 'arquivado').map((c) => `<option value="${c.id}">${escapeHtml(c.nome)}</option>`).join('');
+      clientesCarregados = true;
     } catch {
       selCliente.innerHTML = '<option value="">Não foi possível carregar</option>';
+      clientesCarregados = false;
     }
   }
 
@@ -3692,10 +3708,11 @@ function abrirModalNovoLembrete({ aoSalvar } = {}) {
   }
 
   selTipo.addEventListener('change', () => {
-    elemento.querySelector('#lb-cobranca').classList.toggle('oculto', !ehCobranca());
-    if (ehCobranca() && !selCliente.options.length) carregarClientes();
+    atualizarVisibilidade();
+    selParcela.value = '';
   });
   selCliente.addEventListener('change', carregarParcelas);
+  atualizarVisibilidade();
 
   elemento.querySelector('#salvar-lb').addEventListener('click', async () => {
     const descricao = elemento.querySelector('#lb-desc').value.trim();
@@ -3705,7 +3722,12 @@ function abrirModalNovoLembrete({ aoSalvar } = {}) {
       data: elemento.querySelector('#lb-data').value, hora: elemento.querySelector('#lb-hora').value,
       alerta: elemento.querySelector('#lb-alerta').value, clienteId: null,
     };
-    if (ehCobranca()) {
+    const modo = modoCampos();
+    if (modo === 'cliente') {
+      if (!selCliente.value) return toast('Selecione o cliente.', 'erro');
+      dados.clienteId = selCliente.value;
+    }
+    if (modo === 'cobranca') {
       if (!selCliente.value) return toast('Selecione o cliente da cobrança.', 'erro');
       if (!selParcela.value) return toast('Selecione a parcela da cobrança.', 'erro');
       const [emprestimoId, parcelaId] = selParcela.value.split(':');
