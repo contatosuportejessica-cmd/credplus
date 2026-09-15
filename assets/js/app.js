@@ -5187,7 +5187,7 @@ async function renderConfiguracoes(container, { usuario, aoSair, aoAtualizarUsua
         <button class="btn btn-primario" id="btn-alterar-senha">Alterar senha</button>
         <hr style="margin:22px 0;border:none;border-top:1px solid var(--cinza-100)">
         <div class="card-titulo" style="margin-bottom:10px">Pergunta de recuperação</div>
-        <p class="texto-sm texto-mudo" style="margin-bottom:14px">Pergunta atual: <strong>${escapeHtml(usuario?.pergunta_recuperacao || 'Nenhuma pergunta de recuperação cadastrada')}</strong>${usuario?.pergunta_recuperacao ? '' : ' — cadastre uma abaixo para poder recuperar sua senha sem e-mail.'}</p>
+        <p class="texto-sm texto-mudo" style="margin-bottom:14px">Pergunta atual: <strong>${escapeHtml(usuario?.pergunta_recuperacao || 'Nenhuma pergunta de recuperação cadastrada')}</strong>${usuario?.pergunta_recuperacao ? '<br>Resposta cadastrada: •••••••• (protegida, nunca exibida)' : ' — cadastre uma abaixo para poder recuperar sua senha sem e-mail.'}</p>
         <div class="card-titulo" style="margin-bottom:10px;font-size:15px">Alterar pergunta de recuperação</div>
         <div class="campo"><label>Nova pergunta</label><select class="select" id="cfg-pergunta"></select></div>
         <div class="campo"><label>Nova resposta secreta</label><input class="input" id="cfg-resposta" autocomplete="off" minlength="3"></div>
