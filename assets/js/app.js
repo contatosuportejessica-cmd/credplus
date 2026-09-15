@@ -618,7 +618,7 @@ function gerarDadosDemo() {
 window.CP = window.CP || {};
 (function () {
   'use strict';
-  const { api, ErroAPI, gerarDadosDemo, gerarId, statusParcela, diasEntre, hoje, armazenamento } = window.CP;
+  const { api, ErroAPI, gerarDadosDemo, gerarId, statusParcela, diasEntre, hoje, armazenamento, obterToken } = window.CP;
 
 const CHAVE_DEMO = 'credplus_modo_demo';
 
@@ -2554,7 +2554,9 @@ async function renderClienteDetalhe(container, { clienteId, navegarClientes, abr
       [emprestimos, pagamentos, notas] = await Promise.all([
         loja.listarEmprestimos({ clienteId }),
         loja.listarPagamentos({ clienteId }),
-        loja.listarNotas().then((n) => n.filter((x) => x.clienteId === clienteId)),
+        // Anotações EXCLUSIVAS deste cliente (comparação por string: o id da
+        // rota chega como texto e o da API como número).
+        loja.listarNotas().then((n) => n.filter((x) => x.clienteId != null && String(x.clienteId) === String(clienteId))),
       ]);
     } catch (err) {
       container.innerHTML = estadoVazio({ iconeNome: 'clientes', titulo: 'Não foi possível carregar o cliente', descricao: err.message });
@@ -2651,7 +2653,11 @@ async function renderClienteDetalhe(container, { clienteId, navegarClientes, abr
       alvo.innerHTML = `
         <button class="btn btn-secundario btn-sm" id="btn-nova-nota-cliente" style="margin-bottom:14px">${icone('mais2', 14)} Nova anotação</button>
         ${!notas.length ? estadoVazio({ iconeNome: 'notas', titulo: 'Nenhuma anotação', descricao: 'Registre observações importantes sobre este cliente.' }) :
-          notas.map((n) => `<div class="lista-card"><div style="font-weight:700">${escapeHtml(n.titulo)}</div><p class="texto-sm texto-mudo" style="margin-top:4px">${escapeHtml(n.conteudo)}</p></div>`).join('')}`;
+          notas.map((n) => `<div class="lista-card"><div class="flex justify-between items-start"><div style="font-weight:700">${escapeHtml(n.titulo)}</div>
+            <div class="flex gap-8"><button class="btn-icone" style="width:30px;height:30px" data-nota-editar="${n.id}" title="Editar">${icone('editar', 14)}</button>
+            <button class="btn-icone" style="width:30px;height:30px" data-nota-excluir="${n.id}" title="Excluir">${icone('lixo', 14)}</button></div></div>
+            <p class="texto-sm texto-mudo" style="margin-top:4px">${escapeHtml(n.conteudo)}</p>
+            <div class="texto-xs texto-mudo" style="margin-top:8px">${formatarData((n.criadoEm || '').slice(0, 10))}</div></div>`).join('')}`;
       container.querySelector('#btn-nova-nota-cliente')?.addEventListener('click', async () => {
         const { elemento, fechar } = abrirModal({
           titulo: 'Nova anotação', corpoHtml: `<div class="campo"><label>Título</label><input class="input" id="nota-titulo-cli"></div><div class="campo"><label>Conteúdo</label><textarea class="input" id="nota-conteudo-cli" rows="4"></textarea></div>`,
@@ -2666,6 +2672,32 @@ async function renderClienteDetalhe(container, { clienteId, navegarClientes, abr
           fechar(); toast('Anotação salva.', 'sucesso'); carregar();
         });
       });
+      container.querySelectorAll('[data-nota-editar]').forEach((b) => b.addEventListener('click', () => {
+        const n = notas.find((x) => String(x.id) === b.dataset.notaEditar);
+        if (!n) return;
+        const { elemento, fechar } = abrirModal({
+          titulo: 'Editar anotação', corpoHtml: `<div class="campo"><label>Título</label><input class="input" id="nota-titulo-cli" value="${escapeHtml(n.titulo || '')}"></div><div class="campo"><label>Conteúdo</label><textarea class="input" id="nota-conteudo-cli" rows="4">${escapeHtml(n.conteudo || '')}</textarea></div>`,
+          rodapeHtml: `<button class="btn btn-secundario" id="cancelar-nota">Cancelar</button><button class="btn btn-primario" id="salvar-nota-cli">Salvar</button>`,
+        });
+        elemento.querySelector('#cancelar-nota').addEventListener('click', fechar);
+        elemento.querySelector('#salvar-nota-cli').addEventListener('click', async () => {
+          const titulo = elemento.querySelector('#nota-titulo-cli').value.trim();
+          const conteudo = elemento.querySelector('#nota-conteudo-cli').value.trim();
+          if (!titulo) return toast('Informe um título.', 'erro');
+          try {
+            await loja.atualizarNota(n.id, { titulo, conteudo });
+            fechar(); toast('Anotação atualizada.', 'sucesso'); carregar();
+          } catch (err) { toast(err.message || 'Não foi possível salvar.', 'erro'); }
+        });
+      }));
+      container.querySelectorAll('[data-nota-excluir]').forEach((b) => b.addEventListener('click', async () => {
+        const ok = await confirmarAcao({ titulo: 'Excluir anotação', mensagem: 'Deseja excluir esta anotação? Esta ação não pode ser desfeita.', textoConfirmar: 'Excluir', perigo: true });
+        if (!ok) return;
+        try {
+          await loja.excluirNota(b.dataset.notaExcluir);
+          toast('Anotação excluída.', 'sucesso'); carregar();
+        } catch (err) { toast(err.message || 'Não foi possível excluir.', 'erro'); }
+      }));
     } else if (abaAtual === 'arquivos') {
       alvo.innerHTML = `<div class="card"><div class="carregando"><div class="spinner"></div></div></div>`;
       (async () => {
@@ -4241,10 +4273,13 @@ async function renderNotas(container) {
   }
 
   function render(lista) {
-    const filtrada = busca ? lista.filter((n) => n.titulo.toLowerCase().includes(busca.toLowerCase()) || n.conteudo?.toLowerCase().includes(busca.toLowerCase())) : lista;
+    // Notas GERAIS: só as sem vínculo com cliente. Anotações de cliente
+    // vivem exclusivamente na aba Anotações da ficha de cada cliente.
+    const gerais = lista.filter((n) => n.clienteId == null);
+    const filtrada = busca ? gerais.filter((n) => n.titulo.toLowerCase().includes(busca.toLowerCase()) || n.conteudo?.toLowerCase().includes(busca.toLowerCase())) : gerais;
     container.innerHTML = `
     <div class="pagina-cabecalho">
-      <div><h1 class="pagina-titulo">Notas</h1><p class="pagina-subtitulo">${lista.length} nota${lista.length === 1 ? '' : 's'}.</p></div>
+      <div><h1 class="pagina-titulo">Notas</h1><p class="pagina-subtitulo">${filtrada.length} nota${filtrada.length === 1 ? '' : 's'}.</p></div>
       <button class="btn btn-primario" id="btn-nova-nota">${icone('mais2', 17)} Nova nota</button>
     </div>
     <div class="card" style="padding:14px 18px;margin-bottom:18px">
