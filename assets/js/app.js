@@ -4645,10 +4645,15 @@ async function renderRelatorios(container) {
   }
 
   function render(emprestimos, pagamentos, movimentacoes, clientes) {
+    // IDs da API são numéricos, mas o <select> devolve string — normaliza
+    // tudo para string UMA vez aqui. Sem isso, `===` filtrava todos os
+    // registros (relatório zerado) e o select recriado nunca marcava o
+    // cliente (voltava visualmente para "Todos os clientes").
+    const filtroClienteId = clienteFiltro === '' || clienteFiltro == null ? '' : String(clienteFiltro);
     const dentro = (d) => d >= inicio && d <= fim;
-    const empFiltrados = emprestimos.filter((e) => dentro(e.dataOperacao) && (!clienteFiltro || e.clienteId === clienteFiltro));
-    const pgFiltrados = pagamentos.filter((p) => dentro(p.data) && (!clienteFiltro || p.clienteId === clienteFiltro));
-    const movFiltradas = movimentacoes.filter((m) => dentro(m.data) && (!clienteFiltro || m.clienteId === clienteFiltro));
+    const empFiltrados = emprestimos.filter((e) => dentro(e.dataOperacao) && (!filtroClienteId || String(e.clienteId) === filtroClienteId));
+    const pgFiltrados = pagamentos.filter((p) => dentro(p.data) && (!filtroClienteId || String(p.clienteId) === filtroClienteId));
+    const movFiltradas = movimentacoes.filter((m) => dentro(m.data) && (!filtroClienteId || (m.clienteId != null && String(m.clienteId) === filtroClienteId)));
 
     const capitalEmprestado = empFiltrados.reduce((a, e) => a + e.capital, 0);
     const valoresRecebidos = pgFiltrados.reduce((a, p) => a + p.valorRecebido, 0);
@@ -4673,7 +4678,7 @@ async function renderRelatorios(container) {
         <div class="campo"><label>Data inicial</label><input class="input" type="date" id="rel-inicio" value="${inicio}"></div>
         <div class="campo"><label>Data final</label><input class="input" type="date" id="rel-fim" value="${fim}"></div>
         <div class="campo form-full"><label>Cliente</label>
-          <select class="select" id="rel-cliente"><option value="">Todos os clientes</option>${clientes.map((c) => `<option value="${c.id}" ${clienteFiltro === c.id ? 'selected' : ''}>${escapeHtml(c.nome)}</option>`).join('')}</select>
+          <select class="select" id="rel-cliente"><option value="">Todos os clientes</option>${clientes.map((c) => `<option value="${c.id}" ${String(clienteFiltro) === String(c.id) ? 'selected' : ''}>${escapeHtml(c.nome)}</option>`).join('')}</select>
         </div>
       </div>
     </div>
