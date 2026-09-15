@@ -1213,6 +1213,9 @@ function renderTopbar(usuario, contadorNaoLidas) {
       <a href="#/configuracoes" style="display:flex;align-items:center">
         ${usuario?.foto ? `<img class="avatar" src="${usuario.foto}" alt="">` : `<div class="avatar">${iniciais(usuario?.nome)}</div>`}
       </a>
+      <button class="btn-icone" id="btn-sair-topo" title="Sair da conta">
+        ${icone('logout', 19)}
+      </button>
       <div class="notificacoes-dropdown oculto" id="notificacoes-dropdown">
         <div class="notificacoes-cabecalho">Notificações</div>
         <div class="notificacoes-lista" id="notificacoes-lista">
@@ -3876,6 +3879,38 @@ async function renderConfiguracoes(container, { usuario, aoSair, aoAtualizarUsua
     renderAba();
   }
 
+  // Reduz a foto para no máximo 256px e devolve um JPEG leve (data-URL).
+  // Evita Base64 pesado no banco: ~15-30KB em vez de megabytes do original.
+  function processarFotoPerfil(arquivo) {
+    return new Promise((resolve, reject) => {
+      if (!arquivo || !arquivo.type.startsWith('image/')) return reject(new Error('Selecione um arquivo de imagem.'));
+      if (arquivo.size > 8 * 1024 * 1024) return reject(new Error('Imagem muito grande (máximo 8MB).'));
+      const url = URL.createObjectURL(arquivo);
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const MAX = 256;
+          const escala = Math.min(1, MAX / Math.max(img.width, img.height));
+          const w = Math.max(1, Math.round(img.width * escala));
+          const h = Math.max(1, Math.round(img.height * escala));
+          const canvas = document.createElement('canvas');
+          canvas.width = w;
+          canvas.height = h;
+          canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+          URL.revokeObjectURL(url);
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.75);
+          if (dataUrl.length > 200 * 1024) return reject(new Error('Não foi possível reduzir a imagem o suficiente.'));
+          resolve(dataUrl);
+        } catch (err) {
+          URL.revokeObjectURL(url);
+          reject(new Error('Não foi possível processar a imagem.'));
+        }
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Arquivo de imagem inválido.')); };
+      img.src = url;
+    });
+  }
+
   function rotulo(a) { return { perfil: 'Perfil', preferencias: 'Preferências', notificacoes: 'Notificações', seguranca: 'Segurança', dados: 'Dados' }[a]; }
 
   function renderAba() {
@@ -3884,22 +3919,45 @@ async function renderConfiguracoes(container, { usuario, aoSair, aoAtualizarUsua
       alvo.innerHTML = `
       <div class="card">
         <div class="pessoa-linha" style="margin-bottom:20px">
+          <span id="cfg-foto-prev">
           ${usuario?.foto ? `<img class="avatar" style="width:64px;height:64px" src="${usuario.foto}">` : `<div class="avatar" style="width:64px;height:64px;font-size:22px">${iniciais(usuario?.nome)}</div>`}
+          </span>
           <div><div style="font-weight:700;font-size:16px">${escapeHtml(usuario?.nome || '')}</div><div class="texto-sm texto-mudo">${escapeHtml(usuario?.email || '')}</div></div>
         </div>
+        <div class="campo"><label>Foto de perfil</label><input class="input" type="file" id="cfg-foto" accept="image/jpeg,image/png,image/webp"><p class="texto-xs texto-mudo" style="margin-top:6px">A imagem é reduzida automaticamente (máx. 256px) antes de salvar.</p></div>
         <div class="campo"><label>Nome</label><input class="input" id="cfg-nome" value="${escapeHtml(usuario?.nome || '')}"></div>
-        <div class="campo"><label>E-mail</label><input class="input" id="cfg-email" value="${escapeHtml(usuario?.email || '')}" disabled></div>
+        <div class="campo"><label>E-mail</label><input class="input" id="cfg-email" value="${escapeHtml(usuario?.email || '')}" disabled readonly></div>
         <div class="campo"><label>Telefone</label><input class="input" id="cfg-telefone" value="${escapeHtml(usuario?.telefone || '')}"></div>
         <button class="btn btn-primario" id="btn-salvar-perfil">Salvar alterações</button>
+        <hr style="margin:22px 0;border:none;border-top:1px solid var(--cinza-100)">
+        <button class="btn btn-secundario btn-bloco" id="btn-sair-conta">Sair da conta</button>
       </div>`;
+      let fotoNova = null;
+      alvo.querySelector('#cfg-foto').addEventListener('change', async (ev) => {
+        const arq = ev.target.files && ev.target.files[0];
+        if (!arq) return;
+        try {
+          fotoNova = await processarFotoPerfil(arq);
+          alvo.querySelector('#cfg-foto-prev').innerHTML = `<img class="avatar" style="width:64px;height:64px" src="${fotoNova}">`;
+        } catch (err) {
+          toast(err.message || 'Não foi possível ler a imagem.', 'erro');
+          ev.target.value = '';
+        }
+      });
       alvo.querySelector('#btn-salvar-perfil').addEventListener('click', async () => {
         try {
-          const atualizado = await api.put('/usuario/perfil', { nome: alvo.querySelector('#cfg-nome').value.trim(), telefone: alvo.querySelector('#cfg-telefone').value.trim() });
+          const corpo = { nome: alvo.querySelector('#cfg-nome').value.trim(), telefone: alvo.querySelector('#cfg-telefone').value.trim() };
+          if (fotoNova) corpo.foto = fotoNova;
+          const atualizado = await api.put('/usuario/perfil', corpo);
           toast('Perfil atualizado.', 'sucesso');
           aoAtualizarUsuario?.(atualizado);
         } catch (err) {
           toast(err instanceof ErroAPI && err.status === 404 ? 'Endpoint PUT /api/usuario/perfil ainda não implementado no backend.' : (err.message || 'Erro ao salvar.'), 'erro');
         }
+      });
+      alvo.querySelector('#btn-sair-conta').addEventListener('click', async () => {
+        const ok = await confirmarAcao({ titulo: 'Sair da conta', mensagem: 'Deseja realmente sair da sua conta?', textoConfirmar: 'Sair', perigo: false });
+        if (ok) aoSair();
       });
     } else if (abaAtual === 'preferencias') {
       alvo.innerHTML = `
@@ -3933,13 +3991,12 @@ async function renderConfiguracoes(container, { usuario, aoSair, aoAtualizarUsua
         <button class="btn btn-primario" id="btn-alterar-senha">Alterar senha</button>
         <hr style="margin:22px 0;border:none;border-top:1px solid var(--cinza-100)">
         <div class="card-titulo" style="margin-bottom:10px">Pergunta de recuperação</div>
-        <p class="texto-sm texto-mudo" style="margin-bottom:14px">Pergunta atual: <strong>${escapeHtml(usuario?.pergunta_recuperacao || 'nenhuma cadastrada')}</strong>${usuario?.pergunta_recuperacao ? '' : ' — cadastre uma para poder recuperar sua senha sem e-mail.'}</p>
+        <p class="texto-sm texto-mudo" style="margin-bottom:14px">Pergunta atual: <strong>${escapeHtml(usuario?.pergunta_recuperacao || 'Nenhuma pergunta de recuperação cadastrada')}</strong>${usuario?.pergunta_recuperacao ? '' : ' — cadastre uma abaixo para poder recuperar sua senha sem e-mail.'}</p>
+        <div class="card-titulo" style="margin-bottom:10px;font-size:15px">Alterar pergunta de recuperação</div>
         <div class="campo"><label>Nova pergunta</label><select class="select" id="cfg-pergunta"></select></div>
         <div class="campo"><label>Nova resposta secreta</label><input class="input" id="cfg-resposta" autocomplete="off" minlength="3"></div>
-        <div class="campo"><label>Confirme com sua senha atual</label><input class="input" type="password" id="cfg-rec-senha"></div>
-        <button class="btn btn-secundario" id="btn-salvar-recuperacao">Salvar pergunta de recuperação</button>
-        <hr style="margin:22px 0;border:none;border-top:1px solid var(--cinza-100)">
-        <button class="btn btn-perigo btn-bloco" id="btn-logout">${'Encerrar sessão'}</button>
+        <div class="campo"><label>Senha atual</label><input class="input" type="password" id="cfg-rec-senha"></div>
+        <button class="btn btn-secundario" id="btn-salvar-recuperacao">Salvar nova pergunta</button>
       </div>`;
       alvo.querySelector('#btn-alterar-senha').addEventListener('click', async () => {
         const atual = alvo.querySelector('#cfg-senha-atual').value;
@@ -3953,10 +4010,6 @@ async function renderConfiguracoes(container, { usuario, aoSair, aoAtualizarUsua
         } catch (err) {
           toast(err instanceof ErroAPI && err.status === 404 ? 'Endpoint PUT /api/usuario/senha ainda não implementado no backend.' : (err.message || 'Erro ao alterar senha.'), 'erro');
         }
-      });
-      alvo.querySelector('#btn-logout').addEventListener('click', async () => {
-        const ok = await confirmarAcao({ titulo: 'Encerrar sessão', mensagem: 'Deseja realmente sair da sua conta?', textoConfirmar: 'Sair', perigo: false });
-        if (ok) aoSair();
       });
       alvo.querySelector('#cfg-pergunta').innerHTML = window.CP.opcoesPerguntasQuestionario(usuario?.pergunta_recuperacao || '');
       alvo.querySelector('#btn-salvar-recuperacao').addEventListener('click', async () => {
@@ -4028,7 +4081,7 @@ async function renderConfiguracoes(container, { usuario, aoSair, aoAtualizarUsua
     renderLembretes, renderMetas, renderSimulador, renderNotas, abrirModalNovaNota,
     renderRelatorios, renderConfiguracoes,
     renderSidebar, renderTopbar, renderBottomNav, renderFolhaMais, renderFabMenu, toast, faixaDemo,
-    escapeHtml, formatarMoeda, formatarData,
+    escapeHtml, formatarMoeda, formatarData, confirmarAcao,
   } = window.CP;
 
 const app = document.getElementById('app');
@@ -4104,6 +4157,7 @@ function renderShell() {
 
   wireBusca();
   wireSino();
+  wireSair();
   wireFab();
   wireFolhaMais();
 }
@@ -4255,6 +4309,13 @@ function wireBusca() {
   };
   input.addEventListener('input', onInput);
   document.addEventListener('click', (e) => { if (!e.target.closest('.busca-global')) resultados?.classList.add('oculto'); });
+}
+
+function wireSair() {
+  document.getElementById('btn-sair-topo')?.addEventListener('click', async () => {
+    const ok = await confirmarAcao({ titulo: 'Sair da conta', mensagem: 'Deseja realmente sair da sua conta?', textoConfirmar: 'Sair', perigo: false });
+    if (ok) encerrarSessao();
+  });
 }
 
 function wireSino() {
