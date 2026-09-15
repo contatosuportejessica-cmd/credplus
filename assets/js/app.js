@@ -762,11 +762,32 @@ class Loja extends EventTarget {
     if (this.demoAtivo) {
       const emp = this.demo.emprestimos.find((e) => e.id === id);
       if (!emp) throw new Error('Empréstimo não encontrado.');
-      const temPag = this.demo.pagamentos.some((p) => p.emprestimoId === id);
-      if (temPag && dados.dataOperacao && dados.dataOperacao !== emp.dataOperacao) {
-        throw new Error('Com pagamentos registrados, só as observações podem ser alteradas.');
+      if (emp.status === 'cancelado') throw new Error('Empréstimo cancelado não pode ser editado.');
+      if (dados.capital != null) throw new Error('O valor emprestado não pode ser alterado (já foi liberado).');
+      const atuais = this.demo.parcelasPorEmprestimo[id] || [];
+      if (Array.isArray(dados.parcelas)) {
+        if (dados.parcelas.length !== atuais.length) throw new Error('Não é possível mudar a quantidade de parcelas editando.');
+        for (const p of dados.parcelas) {
+          const atual = atuais.find((a) => a.numero === p.numero);
+          if (!atual) throw new Error(`Parcela ${p.numero} não pertence a esta operação.`);
+          if ((atual.valorPago || 0) > 0 && (atual.valor !== p.valor || atual.vencimento !== p.vencimento)) {
+            throw new Error(`A parcela ${p.numero} já possui recebimento registrado e não pode ser alterada.`);
+          }
+        }
+        this.demo.parcelasPorEmprestimo[id] = dados.parcelas.map((p) => {
+          const atual = atuais.find((a) => a.numero === p.numero);
+          return { ...atual, valor: p.valor, vencimento: p.vencimento };
+        });
       }
-      Object.assign(emp, dados);
+      if (dados.total != null) {
+        const soma = (this.demo.parcelasPorEmprestimo[id] || []).reduce((a, p) => a + p.valor, 0);
+        if (soma !== dados.total) throw new Error('A soma das parcelas não fecha com o valor total.');
+        if (dados.total <= emp.capital) throw new Error('Valor total a receber deve ser maior que o valor emprestado.');
+        emp.total = dados.total;
+      }
+      if (dados.dataOperacao) emp.dataOperacao = dados.dataOperacao;
+      if (dados.frequencia) emp.frequencia = dados.frequencia;
+      if (dados.observacoes !== undefined) emp.observacoes = dados.observacoes;
       this.emitir('mudou');
       return this._resumoEmprestimo(emp);
     }
@@ -2088,7 +2109,7 @@ async function renderDashboard(container, { usuario, navegar, abrirNovoCliente, 
 window.CP = window.CP || {};
 (function () {
   'use strict';
-  const { loja, ErroAPI, formatarMoeda, formatarData, iniciais, debounce, linkWhatsapp, normalizarTelefone, escapeHtml, icone, estadoCarregando, estadoVazio, badgeStatus, toast, abrirModal, confirmarAcao, abrirModalRegistrarPagamento } = window.CP;
+  const { loja, ErroAPI, formatarMoeda, formatarData, reaisParaCentavos, mascaraMoedaInput, iniciais, debounce, linkWhatsapp, normalizarTelefone, escapeHtml, icone, estadoCarregando, estadoVazio, badgeStatus, toast, abrirModal, confirmarAcao } = window.CP;
 
 function abrirModalEditarCliente(cliente, { aoSalvar } = {}) {
   const { elemento, fechar } = abrirModal({
@@ -2415,7 +2436,10 @@ async function abrirModalDetalheEmprestimo(emprestimoId, { aoAtualizar } = {}) {
     </div>`;
   elemento.querySelector('#btn-pagar-emp')?.addEventListener('click', () => {
     fechar();
-    abrirModalRegistrarPagamento({ clienteId: emp.clienteId, emprestimoId: emp.id, parcelas: parcelas.filter((p) => (p.valor - (p.valorPago || 0)) > 0), aoSalvar: () => { aoAtualizar?.(); } });
+    // Acesso tardio de propósito: este IIFE avalia antes do IIFE de
+    // Empréstimos registrar a função em window.CP (mesma causa do
+    // "abrirModalRegistrarPagamento is not a function" já corrigido aqui).
+    window.CP.abrirModalRegistrarPagamento({ clienteId: emp.clienteId, emprestimoId: emp.id, parcelas: parcelas.filter((p) => (p.valor - (p.valorPago || 0)) > 0), aoSalvar: () => { aoAtualizar?.(); } });
   });
   elemento.querySelector('#btn-editar-emp')?.addEventListener('click', () => {
     fechar();
@@ -2423,35 +2447,98 @@ async function abrirModalDetalheEmprestimo(emprestimoId, { aoAtualizar } = {}) {
   });
 }
 
-// Edição com trava de integridade: com pagamentos, só observações;
-// sem pagamentos, data da operação também. Valores e parcelas nunca.
+// Edição completa espelhando o formulário de criação (mesmos campos e
+// mesma estrutura visual). Trava por campo, nunca genérica:
+//   * capital e cliente: nunca (capital já liberado);
+//   * parcela com recebimento: valor e vencimento travados;
+//   * quantidade de parcelas: nunca (cancele e recrie para isso);
+//   * total/valores/vencimentos de parcelas sem pagamento: livres, desde
+//     que soma(pago) + soma(novo) == total > capital (o backend revalida).
 async function abrirModalEditarEmprestimo(emp, { aoSalvar } = {}) {
-  let temPagamentos = true;
-  try {
-    const hist = await loja.listarPagamentos({ emprestimoId: emp.id }).catch(() => []);
-    temPagamentos = hist.length > 0;
-  } catch { temPagamentos = true; }
+  const parcelasAtuais = (emp.parcelas || []).map((p) => ({
+    numero: p.numero, valor: p.valor, vencimento: p.vencimento,
+    pago: (p.valorPago || 0) > 0, valorPago: p.valorPago || 0,
+  }));
+  const temPagamentos = parcelasAtuais.some((p) => p.pago);
   const { elemento, fechar } = abrirModal({
     titulo: 'Editar empréstimo',
+    tamanho: 'lg',
     corpoHtml: `
-      ${temPagamentos ? '<div class="alerta alerta-aviso" style="margin-bottom:16px">Este empréstimo já possui pagamentos — só as observações podem ser alteradas, para preservar o histórico.</div>' : ''}
+      <div class="texto-sm texto-mudo" style="margin-bottom:6px">Cliente: <strong>${escapeHtml(emp.cliente?.nome || '')}</strong></div>
+      ${temPagamentos ? '<div class="alerta alerta-aviso" style="margin-bottom:16px">Esta operação já possui recebimentos: parcelas pagas ficam travadas e o histórico nunca é alterado. Só o futuro pode ser ajustado.</div>' : ''}
       <div class="form-grid">
-        ${temPagamentos ? '' : `<div class="campo form-full"><label>Data da operação</label><input class="input" type="date" id="emp-edit-data" value="${escapeHtml(emp.dataOperacao || '')}"></div>`}
-        <div class="campo form-full"><label>Observações</label><textarea class="input" id="emp-edit-obs" rows="3">${escapeHtml(emp.observacoes || '')}</textarea></div>
-      </div>`,
-    rodapeHtml: `<button class="btn btn-secundario" id="cancelar-edemp">Cancelar</button><button class="btn btn-primario" id="salvar-edemp">Salvar</button>`,
+        <div class="campo"><label>Valor emprestado (R$)</label><input class="input" value="${(emp.capital / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}" disabled><p class="texto-xs texto-mudo" style="margin-top:4px">Não editável — valor já liberado.</p></div>
+        <div class="campo"><label>Valor total a receber (R$) *</label><input class="input" id="empedit-total" value="${(emp.total / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}"></div>
+        <div class="campo"><label>Frequência</label>
+          <select class="select" id="empedit-frequencia">
+            ${['diario', 'semanal', 'quinzenal', 'mensal', 'personalizado'].map((f) => `<option value="${f}"${emp.frequencia === f ? ' selected' : ''}>${{ diario: 'Diário', semanal: 'Semanal', quinzenal: 'Quinzenal', mensal: 'Mensal', personalizado: 'Personalizado' }[f]}</option>`).join('')}
+          </select>
+        </div>
+        <div class="campo"><label>Data da operação</label><input class="input" type="date" id="empedit-data" value="${escapeHtml(emp.dataOperacao || '')}"></div>
+      </div>
+      <div class="calc-resultado" style="margin-bottom:18px">
+        <div class="item"><div class="rotulo">Taxa/acréscimo</div><div class="valor" id="empedit-taxa">—</div></div>
+        <div class="item"><div class="rotulo">Já recebido (travado)</div><div class="valor" id="empedit-pago">—</div></div>
+      </div>
+      <div class="card-titulo" style="margin:14px 0 8px">Parcelas (mesma quantidade — ${parcelasAtuais.length})</div>
+      <div class="tabela-wrap"><table class="tabela"><thead><tr><th>Nº</th><th>Vencimento</th><th>Valor (R$)</th><th>Situação</th></tr></thead><tbody>
+        ${parcelasAtuais.map((p, i) => `
+        <tr><td>${p.numero}</td>
+          <td>${p.pago ? formatarData(p.vencimento) : `<input class="input" style="max-width:150px" type="date" data-ed-venc="${i}" value="${escapeHtml(p.vencimento || '')}">`}</td>
+          <td>${p.pago ? `${formatarMoeda(p.valor)} <span class="texto-xs texto-mudo">🔒 pago</span>` : `<input class="input" style="max-width:130px" data-ed-valor="${i}" value="${(p.valor / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}">`}</td>
+          <td class="texto-xs texto-mudo">${p.pago ? `Recebido ${formatarMoeda(p.valorPago)}` : 'Pendente'}</td></tr>`).join('')}
+      </tbody></table></div>
+      <div class="texto-xs texto-mudo" style="margin-top:6px" id="empedit-soma">—</div>
+      <div class="campo form-full" style="margin-top:12px"><label>Observações</label><textarea class="input" id="empedit-obs" rows="2">${escapeHtml(emp.observacoes || '')}</textarea></div>`,
+    rodapeHtml: `<button class="btn btn-secundario" id="cancelar-edemp">Cancelar</button><button class="btn btn-primario" id="salvar-edemp">Salvar alterações</button>`,
   });
+  mascaraMoedaInput(elemento.querySelector('#empedit-total'));
+  elemento.querySelectorAll('[data-ed-valor]').forEach((inp) => mascaraMoedaInput(inp));
   elemento.querySelector('#cancelar-edemp').addEventListener('click', fechar);
+
+  function lerParcelas() {
+    return parcelasAtuais.map((p, i) => {
+      if (p.pago) return { numero: p.numero, valor: p.valor, vencimento: p.vencimento };
+      const vEl = elemento.querySelector(`[data-ed-valor="${i}"]`);
+      const dEl = elemento.querySelector(`[data-ed-venc="${i}"]`);
+      return { numero: p.numero, valor: reaisParaCentavos(vEl.value), vencimento: dEl.value };
+    });
+  }
+  function recalcular() {
+    const total = reaisParaCentavos(elemento.querySelector('#empedit-total').value);
+    const taxa = emp.capital > 0 && total > 0 ? ((total - emp.capital) / emp.capital) * 100 : 0;
+    elemento.querySelector('#empedit-taxa').textContent = `${taxa.toFixed(2)}%`;
+    const pago = parcelasAtuais.filter((p) => p.pago).reduce((a, p) => a + p.valorPago, 0);
+    elemento.querySelector('#empedit-pago').textContent = formatarMoeda(pago);
+    const soma = lerParcelas().reduce((a, p) => a + (Number.isFinite(p.valor) ? p.valor : 0), 0);
+    elemento.querySelector('#empedit-soma').innerHTML = `Soma das parcelas: ${formatarMoeda(soma)}` +
+      (soma !== total ? ` <span class="texto-negativo">(diferente do total: ${formatarMoeda(total)})</span>` : '');
+  }
+  elemento.querySelector('#empedit-total').addEventListener('input', recalcular);
+  elemento.querySelectorAll('[data-ed-valor]').forEach((inp) => inp.addEventListener('input', recalcular));
+  recalcular();
+
   elemento.querySelector('#salvar-edemp').addEventListener('click', async () => {
-    const dados = { observacoes: elemento.querySelector('#emp-edit-obs').value.trim() };
-    if (!temPagamentos) dados.dataOperacao = elemento.querySelector('#emp-edit-data').value;
+    const btn = elemento.querySelector('#salvar-edemp');
+    if (btn.disabled) return;
+    const total = reaisParaCentavos(elemento.querySelector('#empedit-total').value);
+    if (total <= emp.capital) return toast('O total deve ser maior que o valor emprestado.', 'erro');
+    const parcelas = lerParcelas();
+    btn.disabled = true;
     try {
-      await loja.atualizarEmprestimo(emp.id, dados);
+      await loja.atualizarEmprestimo(emp.id, {
+        total,
+        frequencia: elemento.querySelector('#empedit-frequencia').value,
+        dataOperacao: elemento.querySelector('#empedit-data').value,
+        observacoes: elemento.querySelector('#empedit-obs').value.trim(),
+        parcelas,
+      });
       toast('Empréstimo atualizado.', 'sucesso');
       fechar();
       aoSalvar?.();
     } catch (err) {
       toast(err.message || 'Não foi possível salvar.', 'erro');
+      btn.disabled = false;
     }
   });
 }
