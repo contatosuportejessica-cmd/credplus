@@ -1077,6 +1077,36 @@ class Loja extends EventTarget {
     this.emitir('mudou');
     return true;
   }
+  async atualizarLembrete(id, dados) {
+    if (this.demoAtivo) {
+      const l = this.demo.lembretes.find((x) => x.id === id);
+      if (!l) throw new Error('Lembrete não encontrado.');
+      Object.assign(l, dados);
+      this.emitir('mudou');
+      return l;
+    }
+    const atualizado = await api.put(`/lembretes/${id}`, dados);
+    this.emitir('mudou');
+    return atualizado;
+  }
+  async listarTemplates() {
+    if (this.demoAtivo) {
+      this.demo.templates = this.demo.templates || null;
+      return this.demo.templates || null;
+    }
+    return api.get('/lembretes/templates');
+  }
+  async salvarTemplate(chave, texto) {
+    if (this.demoAtivo) {
+      this.demo.templatesCustom = this.demo.templatesCustom || {};
+      this.demo.templatesCustom[chave] = texto;
+      this.emitir('mudou');
+      return { ok: true, chave, texto };
+    }
+    const salvo = await api.put(`/lembretes/templates/${chave}`, { texto });
+    this.emitir('mudou');
+    return salvo;
+  }
   async excluirLembrete(id) {
     if (this.demoAtivo) {
       this.demo.lembretes = this.demo.lembretes.filter((l) => l.id !== id);
@@ -3577,10 +3607,25 @@ async function renderAtrasos(container, { navegarClienteDetalhe, abrirRegistrarP
 window.CP = window.CP || {};
 (function () {
   'use strict';
-  const { loja, ErroAPI, formatarData, dataParaISO, hoje, escapeHtml, icone, estadoCarregando, estadoVazio, badgeStatus, toast, abrirModal, confirmarAcao } = window.CP;
+  const { loja, ErroAPI, formatarMoeda, formatarData, dataParaISO, hoje, somarDias, escapeHtml, icone, estadoCarregando, estadoVazio, badgeStatus, toast, abrirModal, confirmarAcao, linkWhatsapp } = window.CP;
 
 const TIPOS = { cobranca: 'Cobrança', cliente: 'Cliente', operacao: 'Operação', reuniao: 'Reunião', pessoal: 'Lembrete pessoal' };
 const PRIORIDADES = { alta: 'vermelho', media: 'amarelo', baixa: 'cinza' };
+
+const TEMPLATES_PADRAO_LOCAL = [
+  { chave: 'antes-vencimento', titulo: 'Lembrete antes do vencimento', texto: 'Olá, {cliente}! Passando para lembrar que sua parcela {parcela}, no valor de {valor}, vence em {vencimento}. Qualquer dúvida, estou à disposição.' },
+  { chave: 'vence-hoje', titulo: 'Vence hoje', texto: 'Olá, {cliente}! Sua parcela {parcela}, no valor de {valor}, vence hoje ({vencimento}). Aguardo seu pagamento. Obrigado!' },
+  { chave: 'atrasada', titulo: 'Parcela atrasada', texto: 'Olá, {cliente}! Verifiquei que sua parcela {parcela}, no valor de {valor}, venceu em {vencimento} e ainda está em aberto. Podemos regularizar hoje?' },
+  { chave: 'amigavel', titulo: 'Cobrança amigável', texto: 'Oi, {cliente}! Tudo bem? Só um toque carinhoso sobre a parcela {parcela} de {valor} (vencimento {vencimento}). Me avise quando puder acertar!' },
+];
+
+function aplicarTemplate(texto, vars) {
+  return String(texto || '')
+    .replaceAll('{cliente}', vars.cliente || '')
+    .replaceAll('{valor}', vars.valor || '')
+    .replaceAll('{vencimento}', vars.vencimento || '')
+    .replaceAll('{parcela}', vars.parcela || '');
+}
 
 function abrirModalNovoLembrete({ aoSalvar } = {}) {
   const { elemento, fechar } = abrirModal({
@@ -3593,19 +3638,83 @@ function abrirModalNovoLembrete({ aoSalvar } = {}) {
         <div class="campo"><label>Data</label><input class="input" type="date" id="lb-data" value="${dataParaISO(hoje())}"></div>
         <div class="campo"><label>Horário</label><input class="input" type="time" id="lb-hora" value="09:00"></div>
         <div class="campo form-full"><label>Alerta</label><select class="select" id="lb-alerta"><option value="no-dia">No dia</option><option value="1-dia">1 dia antes</option><option value="3-dias">3 dias antes</option><option value="personalizado">Personalizado</option></select></div>
+        <div id="lb-cobranca" class="oculto" style="display:contents">
+          <div class="campo form-full"><label>Cliente</label><select class="select" id="lb-cliente"><option value="">Carregando clientes...</option></select></div>
+          <div class="campo form-full"><label>Cobrança / parcela</label><select class="select" id="lb-parcela"><option value="">Selecione um cliente primeiro</option></select></div>
+        </div>
       </div>`,
     rodapeHtml: `<button class="btn btn-secundario" id="cancelar-lb">Cancelar</button><button class="btn btn-primario" id="salvar-lb">Salvar</button>`,
   });
   elemento.querySelector('#cancelar-lb').addEventListener('click', fechar);
+  const selTipo = elemento.querySelector('#lb-tipo');
+  const selCliente =elemento.querySelector('#lb-cliente');
+  const selParcela = elemento.querySelector('#lb-parcela');
+  let parcelasCliente = [];
+
+  function ehCobranca() { return selTipo.value === 'cobranca'; }
+
+  async function carregarClientes() {
+    try {
+      const clientes = await loja.listarClientes({});
+      selCliente.innerHTML = '<option value="">Selecione...</option>' +
+        clientes.filter((c) => c.status !== 'arquivado').map((c) => `<option value="${c.id}">${escapeHtml(c.nome)}</option>`).join('');
+    } catch {
+      selCliente.innerHTML = '<option value="">Não foi possível carregar</option>';
+    }
+  }
+
+  async function carregarParcelas() {
+    const clienteId = selCliente.value;
+    parcelasCliente = [];
+    if (!clienteId) {
+      selParcela.innerHTML = '<option value="">Selecione um cliente primeiro</option>';
+      return;
+    }
+    selParcela.innerHTML = '<option value="">Carregando parcelas...</option>';
+    try {
+      const emps = await loja.listarEmprestimos({ clienteId });
+      const abertas = [];
+      for (const e of emps) {
+        if (e.status === 'cancelado') continue;
+        for (const p of e.parcelas || []) {
+          if ((p.valor - (p.valorPago || 0)) <= 0) continue;
+          abertas.push({ ...p, emprestimoId: e.id, qtdEmprestimo: e.qtdParcelas, temIrmaos: emps.length > 1 });
+        }
+      }
+      abertas.sort((a, b) => a.vencimento.localeCompare(b.vencimento));
+      parcelasCliente = abertas;
+      selParcela.innerHTML = !abertas.length ? '<option value="">Sem parcelas pendentes</option>' :
+        '<option value="">Selecione...</option>' + abertas.map((p) =>
+          `<option value="${p.emprestimoId}:${p.id}">Parcela ${p.numero}/${p.total ?? p.qtdEmprestimo} • ${formatarMoeda(p.valor - (p.valorPago || 0))} • Vence ${formatarData(p.vencimento)}${p.temIrmaos ? ` (Emp. #${p.emprestimoId})` : ''}</option>`).join('');
+    } catch {
+      selParcela.innerHTML = '<option value="">Não foi possível carregar</option>';
+    }
+  }
+
+  selTipo.addEventListener('change', () => {
+    elemento.querySelector('#lb-cobranca').classList.toggle('oculto', !ehCobranca());
+    if (ehCobranca() && !selCliente.options.length) carregarClientes();
+  });
+  selCliente.addEventListener('change', carregarParcelas);
+
   elemento.querySelector('#salvar-lb').addEventListener('click', async () => {
     const descricao = elemento.querySelector('#lb-desc').value.trim();
     if (!descricao) return toast('Informe a descrição do lembrete.', 'erro');
+    const dados = {
+      descricao, tipo: selTipo.value, prioridade: elemento.querySelector('#lb-prioridade').value,
+      data: elemento.querySelector('#lb-data').value, hora: elemento.querySelector('#lb-hora').value,
+      alerta: elemento.querySelector('#lb-alerta').value, clienteId: null,
+    };
+    if (ehCobranca()) {
+      if (!selCliente.value) return toast('Selecione o cliente da cobrança.', 'erro');
+      if (!selParcela.value) return toast('Selecione a parcela da cobrança.', 'erro');
+      const [emprestimoId, parcelaId] = selParcela.value.split(':');
+      dados.clienteId = selCliente.value;
+      dados.emprestimoId = emprestimoId;
+      dados.parcelaId = parcelaId;
+    }
     try {
-      await loja.criarLembrete({
-        descricao, tipo: elemento.querySelector('#lb-tipo').value, prioridade: elemento.querySelector('#lb-prioridade').value,
-        data: elemento.querySelector('#lb-data').value, hora: elemento.querySelector('#lb-hora').value,
-        alerta: elemento.querySelector('#lb-alerta').value, clienteId: null,
-      });
+      await loja.criarLembrete(dados);
       toast('Lembrete criado.', 'sucesso');
       fechar(); aoSalvar?.();
     } catch (err) { toast(err.message || 'Não foi possível salvar.', 'erro'); }
@@ -3629,6 +3738,16 @@ async function renderLembretes(container) {
       return;
     }
     render(lista);
+    // Chegada via notificação de cobrança: destaca o lembrete e já abre o WhatsApp.
+    if (lembreteDestaqueId) {
+      const alvo = lista.find((x) => String(x.id) === String(lembreteDestaqueId));
+      const abrir = abrirWhatsAppAposNavegar;
+      lembreteDestaqueId = null;
+      abrirWhatsAppAposNavegar = false;
+      if (alvo && alvo.cobranca && alvo.cobranca.parcela && !alvo.concluido && abrir) {
+        await abrirWhatsAppLembrete(alvo);
+      }
+    }
   }
 
   function render(lista) {
@@ -3637,50 +3756,229 @@ async function renderLembretes(container) {
     container.innerHTML = `
     <div class="pagina-cabecalho">
       <div><h1 class="pagina-titulo">Lembretes</h1><p class="pagina-subtitulo">${pendentes.length} pendente${pendentes.length === 1 ? '' : 's'}.</p></div>
-      <button class="btn btn-primario" id="btn-novo-lembrete">${icone('mais2', 17)} Novo lembrete</button>
+      <div class="flex gap-8" style="flex-wrap:wrap">
+        <button class="btn btn-secundario" id="btn-templates">${icone('whatsapp', 16)} Templates do WhatsApp</button>
+        <button class="btn btn-primario" id="btn-novo-lembrete">${icone('mais2', 17)} Novo lembrete</button>
+      </div>
     </div>
     <div id="lista-lembretes"></div>
     ${concluidos.length ? `<div class="card-titulo" style="margin:22px 0 10px">Concluídos</div><div id="lista-concluidos"></div>` : ''}`;
 
     const alvo = container.querySelector('#lista-lembretes');
+    alvo._lembretes = pendentes;
     alvo.innerHTML = !pendentes.length ? estadoVazio({ iconeNome: 'lembretes', titulo: 'Nenhum lembrete pendente', descricao: 'Crie um lembrete para cobranças, reuniões ou tarefas pessoais.' }) :
       pendentes.map((l) => linhaLembrete(l)).join('');
-    vincularAcoes(alvo);
+    vincularAcoes(alvo, carregar);
 
     if (concluidos.length) {
       const alvoC = container.querySelector('#lista-concluidos');
+      alvoC._lembretes = concluidos;
       alvoC.innerHTML = concluidos.map((l) => linhaLembrete(l)).join('');
+      vincularAcoes(alvoC, carregar);
     }
+
+    container.querySelector('#btn-templates').addEventListener('click', () => abrirModalTemplates(carregar));
 
     container.querySelector('#btn-novo-lembrete').addEventListener('click', () => abrirModalNovoLembrete({ aoSalvar: carregar }));
   }
 
+let lembreteDestaqueId = null;
+let abrirWhatsAppAposNavegar = false;
+
+function irParaLembretesTela() {
+  window.location.hash = '#/lembretes';
+}
+
+function irParaLembreteViaNotificacao(lembreteId, comWhatsApp) {
+  lembreteDestaqueId = lembreteId;
+  abrirWhatsAppAposNavegar = !!comWhatsApp;
+  irParaLembretesTela();
+}
+
   function linhaLembrete(l) {
+    const cob = l.cobranca && l.cobranca.parcela ? l.cobranca : null;
+    const infoCobranca = cob ? `
+      <div class="texto-sm" style="margin-top:6px">
+        <div>${escapeHtml(cob.cliente?.nome || '')}</div>
+        <div class="texto-mudo">Parcela ${cob.parcela.numero}/${cob.parcela.totalParcelas} • ${formatarMoeda(cob.parcela.saldo > 0 ? cob.parcela.saldo : cob.parcela.valor)}</div>
+        <div class="texto-xs texto-mudo">Vencimento: ${formatarData(cob.parcela.vencimento)}</div>
+      </div>` : (l.cliente ? `<div class="texto-xs texto-mudo" style="margin-top:4px">${escapeHtml(l.cliente.nome)}</div>` : '');
     return `
-    <div class="lista-card">
+    <div class="lista-card"${lembreteDestaqueId && String(lembreteDestaqueId) === String(l.id) ? ' style="border:2px solid var(--verde-esmeralda)"' : ''}>
       <div class="flex justify-between items-start" style="flex-wrap:wrap;gap:10px">
         <div>
           <div style="font-weight:700;${l.concluido ? 'text-decoration:line-through;color:var(--cinza-500)' : ''}">${escapeHtml(l.descricao)}</div>
-          <div class="texto-xs texto-mudo" style="margin-top:4px">${TIPOS[l.tipo] || l.tipo} · ${formatarData(l.data)} ${l.hora || ''} ${l.cliente ? `· ${escapeHtml(l.cliente.nome)}` : ''}</div>
+          <div class="texto-xs texto-mudo" style="margin-top:4px">${TIPOS[l.tipo] || l.tipo} · ${formatarData(l.data)} ${l.hora || ''}</div>
+          ${infoCobranca}
         </div>
         ${badgeStatus(l.prioridade === 'alta' ? 'Alta' : l.prioridade === 'media' ? 'Média' : 'Baixa', PRIORIDADES[l.prioridade] || 'cinza')}
       </div>
-      ${!l.concluido ? `<div class="flex gap-8" style="margin-top:10px"><button class="btn btn-secundario btn-sm" data-concluir="${l.id}">${icone('check', 14)} Concluir</button><button class="btn btn-perigo btn-sm" data-excluir="${l.id}">Excluir</button></div>` : ''}
+      ${!l.concluido ? `<div class="flex gap-8" style="margin-top:10px;flex-wrap:wrap">
+        ${cob ? `<button class="btn btn-primario btn-sm" data-whatsapp="${l.id}">${icone('whatsapp', 14)} WhatsApp</button>
+        <button class="btn btn-secundario btn-sm" data-adiar="${l.id}">Adiar</button>` : ''}
+        <button class="btn btn-secundario btn-sm" data-concluir="${l.id}">${icone('check', 14)} Concluir</button>
+        <button class="btn btn-perigo btn-sm" data-excluir="${l.id}">Excluir</button></div>` : ''}
     </div>`;
   }
 
-  function vincularAcoes(alvo) {
-    alvo.querySelectorAll('[data-concluir]').forEach((b) => b.addEventListener('click', async () => { await loja.concluirLembrete(b.dataset.concluir); toast('Lembrete concluído.', 'sucesso'); carregar(); }));
+  // Estado vivo da parcela (anti-cobrança enganosa): lê o saldo atual do
+  // empréstimo antes de qualquer ação de cobrança.
+  async function estadoAtualParcela(lembrete) {
+    const cob = lembrete.cobranca;
+    if (!cob || !cob.parcela || !cob.emprestimoId) return { ok: false, motivo: 'sem vínculo' };
+    try {
+      const emp = await loja.obterEmprestimo(cob.emprestimoId);
+      const p = (emp.parcelas || []).find((x) => String(x.id) === String(cob.parcela.id));
+      if (!p) return { ok: false, motivo: 'Parcela não encontrada.' };
+      const saldo = p.valor - (p.valorPago || 0);
+      if (saldo <= 0) return { ok: false, motivo: 'paga', parcela: p, emprestimo: emp };
+      return { ok: true, parcela: p, emprestimo: emp, saldo };
+    } catch (err) {
+      return { ok: false, motivo: err.message || 'Não foi possível verificar a parcela.' };
+    }
+  }
+
+  async function abrirWhatsAppLembrete(lembrete) {
+    const cob = lembrete.cobranca;
+    if (!cob || !cob.parcela) return toast('Este lembrete não tem cobrança vinculada.', 'erro');
+    const estado = await estadoAtualParcela(lembrete);
+    if (!estado.ok && estado.motivo === 'paga') {
+      toast('Esta parcela já foi paga.', 'info');
+      const ok = await confirmarAcao({ titulo: 'Parcela já paga', mensagem: 'Esta parcela já foi quitada. Deseja abrir o WhatsApp mesmo assim?', textoConfirmar: 'Abrir mesmo assim', perigo: false });
+      if (!ok) return;
+    } else if (!estado.ok) {
+      return toast(estado.motivo || 'Não foi possível verificar a parcela.', 'erro');
+    }
+    const numero = cob.cliente?.whatsapp || cob.cliente?.telefone;
+    if (!numero) return toast('Cliente sem WhatsApp/telefone cadastrado.', 'erro');
+    // Recarrega nome/telefone atuais do cliente para a mensagem.
+    let nomeCli = cob.cliente?.nome || '';
+    try {
+      const cli = await loja.obterCliente(cob.cliente.id);
+      if (cli) { nomeCli = cli.nome || nomeCli; }
+    } catch { /* mantém o nome do vínculo */ }
+    const p = (estado.ok && estado.parcela) || cob.parcela;
+    const vars = {
+      cliente: String(nomeCli).split(' ')[0] || nomeCli,
+      valor: formatarMoeda(estado.ok ? (estado.saldo ?? p.valor) : p.valor),
+      vencimento: formatarData(p.vencimento),
+      parcela: `${p.numero}/${p.total ?? p.totalParcelas ?? '?'}`,
+    };
+    let templates = null;
+    try { templates = await loja.listarTemplates(); } catch { templates = null; }
+    const lista = templates || TEMPLATES_PADRAO_LOCAL;
+    const { elemento, fechar } = abrirModal({
+      titulo: 'Cobrança via WhatsApp',
+      corpoHtml: `
+        <p class="texto-sm texto-mudo" style="margin-bottom:12px">Escolha o modelo. As variáveis são preenchidas com os dados reais.</p>
+        <div class="campo"><label>Modelo</label><select class="select" id="wa-tpl">${lista.map((t) => `<option value="${t.chave}">${escapeHtml(t.titulo)}</option>`).join('')}</select></div>
+        <div class="campo"><label>Mensagem</label><textarea class="input" id="wa-msg" rows="5"></textarea></div>`,
+      rodapeHtml: `<button class="btn btn-secundario" id="wa-cancelar">Cancelar</button><button class="btn btn-primario" id="wa-abrir">Abrir WhatsApp</button>`,
+    });
+    const sel = elemento.querySelector('#wa-tpl');
+    const area = elemento.querySelector('#wa-msg');
+    const porChave = new Map(lista.map((t) => [t.chave, t.texto]));
+    const atualizar = () => { area.value = aplicarTemplate(porChave.get(sel.value), vars); };
+    sel.addEventListener('change', atualizar);
+    atualizar();
+    elemento.querySelector('#wa-cancelar').addEventListener('click', fechar);
+    elemento.querySelector('#wa-abrir').addEventListener('click', () => {
+      window.open(linkWhatsapp(numero, area.value), '_blank', 'noopener');
+      fechar();
+    });
+  }
+
+  function abrirModalAdiar(lembrete, aoSalvar) {
+    const { elemento, fechar } = abrirModal({
+      titulo: 'Adiar lembrete',
+      corpoHtml: `
+        <div class="flex gap-8" style="margin-bottom:14px;flex-wrap:wrap">
+          <button class="btn btn-secundario btn-sm" data-adiar-op="1h">+1 hora</button>
+          <button class="btn btn-secundario btn-sm" data-adiar-op="amanha">Amanhã</button>
+        </div>
+        <div class="form-grid">
+          <div class="campo"><label>Nova data</label><input class="input" type="date" id="adiar-data" value="${escapeHtml(lembrete.data || '')}"></div>
+          <div class="campo"><label>Novo horário</label><input class="input" type="time" id="adiar-hora" value="${escapeHtml((lembrete.hora || '09:00').slice(0, 5))}"></div>
+        </div>`,
+      rodapeHtml: `<button class="btn btn-secundario" id="adiar-cancelar">Cancelar</button><button class="btn btn-primario" id="adiar-salvar">Adiar</button>`,
+    });
+    elemento.querySelector('#adiar-cancelar').addEventListener('click', fechar);
+    async function salvar(data, hora) {
+      if (!data) return toast('Escolha a data.', 'erro');
+      try {
+        await loja.atualizarLembrete(lembrete.id, { data, hora: hora || null, concluido: false });
+        toast('Lembrete adiado.', 'sucesso');
+        fechar(); aoSalvar?.();
+      } catch (err) { toast(err.message || 'Não foi possível adiar.', 'erro'); }
+    }
+    elemento.querySelectorAll('[data-adiar-op]').forEach((b) => b.addEventListener('click', () => {
+      const agora = new Date();
+      if (b.dataset.adiarOp === '1h') {
+        const d = new Date(agora.getTime() + 3600000);
+        salvar(d.toISOString().slice(0, 10), `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`);
+      } else {
+        const d = new Date(agora.getTime() + 86400000);
+        salvar(d.toISOString().slice(0, 10), (lembrete.hora || '09:00').slice(0, 5));
+      }
+    }));
+    elemento.querySelector('#adiar-salvar').addEventListener('click', () => {
+      salvar(elemento.querySelector('#adiar-data').value, elemento.querySelector('#adiar-hora').value);
+    });
+  }
+
+  function abrirModalTemplates(aoSalvar) {
+    (async () => {
+      let lista;
+      try {
+        lista = await loja.listarTemplates();
+      } catch (err) {
+        toast(err.message || 'Não foi possível carregar.', 'erro');
+        return;
+      }
+      lista = lista || TEMPLATES_PADRAO_LOCAL;
+      const { elemento, fechar } = abrirModal({
+        titulo: 'Templates do WhatsApp',
+        tamanho: 'lg',
+        corpoHtml: `
+          <p class="texto-sm texto-mudo" style="margin-bottom:14px">Variáveis: {cliente} {valor} {vencimento} {parcela}. Suas edições são salvas por usuário.</p>
+          ${lista.map((t) => `
+          <div class="campo"><label>${escapeHtml(t.titulo)} ${t.personalizado ? '<span class="texto-xs texto-mudo">(personalizado)</span>' : ''}</label>
+          <textarea class="input" rows="3" data-tpl="${t.chave}">${escapeHtml(t.texto)}</textarea></div>`).join('')}`,
+        rodapeHtml: `<button class="btn btn-secundario" id="tpl-cancelar">Fechar</button><button class="btn btn-primario" id="tpl-salvar">Salvar modelos</button>`,
+      });
+      elemento.querySelector('#tpl-cancelar').addEventListener('click', fechar);
+      elemento.querySelector('#tpl-salvar').addEventListener('click', async () => {
+        try {
+          for (const area of elemento.querySelectorAll('[data-tpl]')) {
+            await loja.salvarTemplate(area.dataset.tpl, area.value);
+          }
+          toast('Templates salvos.', 'sucesso');
+          fechar(); aoSalvar?.();
+        } catch (err) { toast(err.message || 'Não foi possível salvar.', 'erro'); }
+      });
+    })();
+  }
+
+  function vincularAcoes(alvo, aoRecarregar) {
+    alvo.querySelectorAll('[data-concluir]').forEach((b) => b.addEventListener('click', async () => { await loja.concluirLembrete(b.dataset.concluir); toast('Lembrete concluído.', 'sucesso'); aoRecarregar(); }));
     alvo.querySelectorAll('[data-excluir]').forEach((b) => b.addEventListener('click', async () => {
       const ok = await confirmarAcao({ titulo: 'Excluir lembrete', mensagem: 'Deseja realmente excluir este lembrete?', textoConfirmar: 'Excluir' });
-      if (ok) { await loja.excluirLembrete(b.dataset.excluir); toast('Lembrete excluído.', 'sucesso'); carregar(); }
+      if (ok) { await loja.excluirLembrete(b.dataset.excluir); toast('Lembrete excluído.', 'sucesso'); aoRecarregar(); }
+    }));
+    alvo.querySelectorAll('[data-whatsapp]').forEach((b) => b.addEventListener('click', async () => {
+      const l = (alvo._lembretes || []).find((x) => String(x.id) === String(b.dataset.whatsapp));
+      if (l) await abrirWhatsAppLembrete(l);
+    }));
+    alvo.querySelectorAll('[data-adiar]').forEach((b) => b.addEventListener('click', () => {
+      const l = (alvo._lembretes || []).find((x) => String(x.id) === String(b.dataset.adiar));
+      if (l) abrirModalAdiar(l, aoRecarregar);
     }));
   }
 
   await carregar();
 }
 
-  Object.assign(window.CP, { abrirModalNovoLembrete, renderLembretes });
+  Object.assign(window.CP, { abrirModalNovoLembrete, renderLembretes, irParaLembreteViaNotificacao });
 })();
 window.CP = window.CP || {};
 (function () {
@@ -5083,6 +5381,10 @@ async function aoClicarNotificacao(id) {
     n.lida = true;
     atualizarBadgeNotificacoes();
     try { await loja.marcarNotificacaoLida(id); } catch (err) { /* mantém marcado localmente mesmo se a sincronização falhar */ }
+  }
+  if (n.tipo === 'lembrete' && n.origemId && window.CP.irParaLembreteViaNotificacao) {
+    window.CP.irParaLembreteViaNotificacao(n.origemId, true);
+    return;
   }
   if (n.tipo === 'lembrete') irPara('lembretes');
 }
