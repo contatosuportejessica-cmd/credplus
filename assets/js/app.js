@@ -1143,6 +1143,10 @@ class Loja extends EventTarget {
     return true;
   }
   async calcularProgressoMeta(meta) {
+    if (meta.tipo === 'recebimento_mensal') {
+      const p = await this.progressoMeta(meta);
+      return p.realizado;
+    }
     if (this.demoAtivo) {
       const dentro = (data) => data >= meta.dataInicio && data <= meta.dataFim;
       if (meta.tipo === 'ganho') {
@@ -1166,6 +1170,91 @@ class Loja extends EventTarget {
       return 0;
     }
     return api.get(`/metas/${meta.id}/progresso`).then((r) => r.realizado);
+  }
+
+  // Progresso completo (usado pela meta mensal; tipos antigos usam só
+  // `realizado` via calcularProgressoMeta). No demo, replica as fórmulas
+  // do backend sobre os dados fictícios.
+  async progressoMeta(meta) {
+    if (this.demoAtivo) {
+      const ini = meta.dataInicio;
+      const fim = meta.dataFim;
+      const noMes = (data) => data >= ini && data <= fim;
+      const recebido = this.demo.pagamentos.filter((p) => noMes(p.data)).reduce((a, p) => a + p.valorRecebido, 0);
+      const empAtivo = new Map(this.demo.emprestimos.filter((e) => e.status !== 'cancelado').map((e) => [e.id, e]));
+      let previsto = 0;
+      const composicao = [];
+      for (const [empId, lista] of Object.entries(this.demo.parcelasPorEmprestimo || {})) {
+        const emp = empAtivo.get(empId);
+        if (!emp) continue;
+        const cliente = this.demo.clientes.find((c) => c.id === emp.clienteId);
+        for (const p of lista) {
+          if (!noMes(p.vencimento)) continue;
+          const saldo = p.valor - (p.valorPago || 0);
+          if (saldo > 0) previsto += saldo;
+          composicao.push({
+            parcelaId: p.id, numero: p.numero, totalParcelas: lista.length, vencimento: p.vencimento,
+            valor: p.valor, valorPago: p.valorPago || 0, saldo, emprestimoId: empId,
+            cliente: { id: cliente?.id, nome: cliente?.nome },
+          });
+        }
+      }
+      composicao.sort((a, b) => a.vencimento.localeCompare(b.vencimento));
+      const potencial = recebido + previsto;
+      const falta = Math.max(0, meta.valorAlvo - potencial);
+      return { realizado: recebido, recebido, previsto, potencial, falta,
+        cobertura: meta.valorAlvo > 0 ? Math.min(100, Math.round((potencial / meta.valorAlvo) * 100)) : 0,
+        mesAlvo: ini.slice(0, 7), composicao,
+        projecao: this._projecaoDemo(), ticketMedio: this._ticketDemo(), qtdParcelasFuturas: 0 };
+    }
+    return api.get(`/metas/${meta.id}/progresso`);
+  }
+
+  _projecaoDemo() {
+    const agora = hoje();
+    const base = `${agora.getFullYear()}-${String(agora.getMonth() + 1).padStart(2, '0')}`;
+    const [ay, am] = base.split('-').map(Number);
+    const meses = [];
+    for (let i = 0; i < 6; i++) {
+      const d = new Date(Date.UTC(ay, am - 1 + i, 1));
+      meses.push(d.toISOString().slice(0, 7));
+    }
+    return meses.map((m) => {
+      let previsto = 0;
+      for (const [empId, lista] of Object.entries(this.demo.parcelasPorEmprestimo || {})) {
+        const emp = (this.demo.emprestimos || []).find((e) => e.id === empId);
+        if (!emp || emp.status === 'cancelado') continue;
+        for (const p of lista) {
+          if (p.vencimento.slice(0, 7) === m) previsto += Math.max(0, p.valor - (p.valorPago || 0));
+        }
+      }
+      return { mes: m, previsto };
+    });
+  }
+
+  _ticketDemo() {
+    let soma = 0, n = 0;
+    for (const [empId, lista] of Object.entries(this.demo.parcelasPorEmprestimo || {})) {
+      const emp = (this.demo.emprestimos || []).find((e) => e.id === empId);
+      if (!emp || emp.status === 'cancelado') continue;
+      for (const p of lista) {
+        if (p.valor - (p.valorPago || 0) > 0) { soma += p.valor; n += 1; }
+      }
+    }
+    return n ? Math.round(soma / n) : 0;
+  }
+
+  async atualizarMeta(id, dados) {
+    if (this.demoAtivo) {
+      const m = this.demo.metas.find((x) => x.id === id);
+      if (!m) throw new Error('Meta não encontrada.');
+      Object.assign(m, dados);
+      this.emitir('mudou');
+      return m;
+    }
+    const atualizada = await api.put(`/metas/${id}`, dados);
+    this.emitir('mudou');
+    return atualizada;
   }
 
   // ===== Notas =====
@@ -3598,7 +3687,21 @@ window.CP = window.CP || {};
   'use strict';
   const { loja, ErroAPI, formatarMoeda, formatarData, reaisParaCentavos, mascaraMoedaInput, dataParaISO, hoje, somarMeses, escapeHtml, icone, estadoCarregando, estadoVazio, toast, abrirModal, confirmarAcao } = window.CP;
 
-const TIPOS = { capital_emprestado: 'Capital emprestado', recebimentos: 'Recebimentos', ganho: 'Ganho', quantidade_operacoes: 'Quantidade de operações' };
+const TIPOS = { capital_emprestado: 'Capital emprestado', recebimentos: 'Recebimentos', ganho: 'Ganho', quantidade_operacoes: 'Quantidade de operações', recebimento_mensal: 'Recebimento mensal' };
+
+const MESES_PT = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+
+function mesExtenso(anoMes) {
+  const [y, m] = String(anoMes || '').split('-').map(Number);
+  if (!y || !m || m < 1 || m > 12) return anoMes || '';
+  return `${MESES_PT[m - 1]}/${y}`;
+}
+
+function limitesMes(anoMes) {
+  const [y, m] = String(anoMes || '').split('-').map(Number);
+  const ultimo = new Date(y, m, 0).toISOString().slice(0, 10);
+  return { inicio: `${anoMes}-01`, fim: ultimo };
+}
 
 function abrirModalNovaMeta({ aoSalvar } = {}) {
   const { elemento, fechar } = abrirModal({
@@ -3610,19 +3713,30 @@ function abrirModalNovaMeta({ aoSalvar } = {}) {
         <div class="campo"><label>Período</label><select class="select" id="mt-periodo"><option value="mensal">Mensal</option><option value="trimestral">Trimestral</option><option value="anual">Anual</option><option value="personalizado">Personalizado</option></select></div>
         <div class="campo" id="wrap-valor-alvo"><label>Valor alvo (R$)</label><input class="input" id="mt-valor" placeholder="0,00"></div>
         <div class="campo" id="wrap-qtd-alvo"><label>Quantidade alvo</label><input class="input" type="number" id="mt-qtd" min="1"></div>
+        <div class="campo oculto" id="wrap-mes-alvo"><label>Mês-alvo</label><input class="input" type="month" id="mt-mes"></div>
+        <div class="campo" id="wrap-periodo-sel"><label>Período</label><select class="select" id="mt-periodo"><option value="mensal">Mensal</option><option value="trimestral">Trimestral</option><option value="anual">Anual</option><option value="personalizado">Personalizado</option></select></div>
+        <div id="wrap-periodo-datas" style="display:contents">
         <div class="campo"><label>Início</label><input class="input" type="date" id="mt-inicio" value="${dataParaISO(hoje())}"></div>
         <div class="campo"><label>Fim</label><input class="input" type="date" id="mt-fim" value="${dataParaISO(somarMeses(hoje(), 1))}"></div>
+        </div>
       </div>`,
     rodapeHtml: `<button class="btn btn-secundario" id="cancelar-mt">Cancelar</button><button class="btn btn-primario" id="salvar-mt">Salvar</button>`,
   });
   const $ = (s) => elemento.querySelector(s);
   mascaraMoedaInput($('#mt-valor'));
+  const mesAtual = dataParaISO(hoje()).slice(0, 7);
   function atualizarCampos() {
-    const eQtd = $('#mt-tipo').value === 'quantidade_operacoes';
+    const tipo = $('#mt-tipo').value;
+    const eQtd = tipo === 'quantidade_operacoes';
+    const eMensal = tipo === 'recebimento_mensal';
     $('#wrap-valor-alvo').classList.toggle('oculto', eQtd);
     $('#wrap-qtd-alvo').classList.toggle('oculto', !eQtd);
+    $('#wrap-mes-alvo').classList.toggle('oculto', !eMensal);
+    $('#wrap-periodo-sel').classList.toggle('oculto', eMensal);
+    $('#wrap-periodo-datas').classList.toggle('oculto', eMensal);
   }
   $('#mt-tipo').addEventListener('change', atualizarCampos);
+  $('#mt-mes').value = mesAtual;
   atualizarCampos();
 
   $('#cancelar-mt').addEventListener('click', fechar);
@@ -3632,9 +3746,70 @@ function abrirModalNovaMeta({ aoSalvar } = {}) {
     const tipo = $('#mt-tipo').value;
     const valorAlvo = tipo === 'quantidade_operacoes' ? (parseInt($('#mt-qtd').value) || 0) : reaisParaCentavos($('#mt-valor').value);
     if (valorAlvo <= 0) return toast('Informe um valor alvo válido.', 'erro');
+    let periodo = $('#mt-periodo').value;
+    let dataInicio = $('#mt-inicio').value;
+    let dataFim = $('#mt-fim').value;
+    if (tipo === 'recebimento_mensal') {
+      const mes = $('#mt-mes').value;
+      if (!/^\d{4}-\d{2}$/.test(mes)) return toast('Escolha o mês-alvo.', 'erro');
+      periodo = 'mensal';
+      ({ inicio: dataInicio, fim: dataFim } = limitesMes(mes));
+    }
     try {
-      await loja.criarMeta({ titulo, tipo, periodo: $('#mt-periodo').value, valorAlvo, dataInicio: $('#mt-inicio').value, dataFim: $('#mt-fim').value });
+      await loja.criarMeta({ titulo, tipo, periodo, valorAlvo, dataInicio, dataFim });
       toast('Meta criada.', 'sucesso');
+      fechar(); aoSalvar?.();
+    } catch (err) { toast(err.message || 'Não foi possível salvar.', 'erro'); }
+  });
+}
+
+function abrirModalEditarMeta(meta, { aoSalvar } = {}) {
+  const eMensal = meta.tipo === 'recebimento_mensal';
+  const eQtd = meta.tipo === 'quantidade_operacoes';
+  const { elemento, fechar } = abrirModal({
+    titulo: 'Editar meta',
+    corpoHtml: `
+      <div class="form-grid">
+        <div class="campo form-full"><label>Título *</label><input class="input" id="mt-titulo" value="${escapeHtml(meta.titulo || '')}"></div>
+        <div class="campo ${eQtd || eMensal ? 'oculto' : ''}" id="wrap-valor-alvo"><label>Valor alvo (R$)</label><input class="input" id="mt-valor" value="${eQtd ? '' : (meta.valorAlvo / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}"></div>
+        <div class="campo ${eQtd ? '' : 'oculto'}" id="wrap-qtd-alvo"><label>Quantidade alvo</label><input class="input" type="number" id="mt-qtd" min="1" value="${eQtd ? meta.valorAlvo : ''}"></div>
+        ${eMensal ? `<div class="campo"><label>Valor mensal desejado (R$)</label><input class="input" id="mt-valor" value="${(meta.valorAlvo / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}"></div>
+        <div class="campo"><label>Mês-alvo</label><input class="input" type="month" id="mt-mes" value="${escapeHtml((meta.dataInicio || '').slice(0, 7))}"></div>`
+        : `<div class="campo"><label>Início</label><input class="input" type="date" id="mt-inicio" value="${escapeHtml(meta.dataInicio || '')}"></div>
+        <div class="campo"><label>Fim</label><input class="input" type="date" id="mt-fim" value="${escapeHtml(meta.dataFim || '')}"></div>`}
+      </div>`,
+    rodapeHtml: `<button class="btn btn-secundario" id="cancelar-mt">Cancelar</button><button class="btn btn-primario" id="salvar-mt">Salvar</button>`,
+  });
+  const $ = (s) => elemento.querySelector(s);
+  if ($('#mt-valor')) mascaraMoedaInput($('#mt-valor'));
+  $('#cancelar-mt').addEventListener('click', fechar);
+  $('#salvar-mt').addEventListener('click', async () => {
+    const titulo = $('#mt-titulo').value.trim();
+    if (!titulo) return toast('Informe um título para a meta.', 'erro');
+    const dados = { titulo };
+    if (eQtd) {
+      dados.valorAlvo = parseInt($('#mt-qtd').value) || 0;
+      if (dados.valorAlvo <= 0) return toast('Informe uma quantidade válida.', 'erro');
+    } else {
+      dados.valorAlvo = reaisParaCentavos($('#mt-valor').value);
+      if (dados.valorAlvo <= 0) return toast('Informe um valor alvo válido.', 'erro');
+    }
+    if (eMensal) {
+      const mes = $('#mt-mes').value;
+      if (!/^\d{4}-\d{2}$/.test(mes)) return toast('Escolha o mês-alvo.', 'erro');
+      const lim = limitesMes(mes);
+      dados.dataInicio = lim.inicio;
+      dados.dataFim = lim.fim;
+    } else {
+      dados.dataInicio = $('#mt-inicio').value;
+      dados.dataFim = $('#mt-fim').value;
+      if (!dados.dataInicio || !dados.dataFim || dados.dataFim < dados.dataInicio) {
+        return toast('Período inválido.', 'erro');
+      }
+    }
+    try {
+      await loja.atualizarMeta(meta.id, dados);
+      toast('Meta atualizada.', 'sucesso');
       fechar(); aoSalvar?.();
     } catch (err) { toast(err.message || 'Não foi possível salvar.', 'erro'); }
   });
@@ -3642,6 +3817,8 @@ function abrirModalNovaMeta({ aoSalvar } = {}) {
 
 async function renderMetas(container) {
   container.innerHTML = estadoCarregando();
+  let metaSelecionadaId = null;
+  let verTodasParcelas = false;
 
   async function carregar() {
     let metas;
@@ -3656,39 +3833,155 @@ async function renderMetas(container) {
       container.querySelector('#btn-demo-mt')?.addEventListener('click', () => { loja.ativarDemo(); toast('Modo demonstração ativado.', 'sucesso'); carregar(); });
       return;
     }
-    const comProgresso = await Promise.all(metas.map(async (m) => ({ ...m, realizado: await loja.calcularProgressoMeta(m) })));
+    const comProgresso = await Promise.all(metas.map(async (m) => {
+      if (m.tipo === 'recebimento_mensal') {
+        try {
+          const p = await loja.progressoMeta(m);
+          return { ...m, mensal: p };
+        } catch {
+          return { ...m, mensal: null };
+        }
+      }
+      return { ...m, realizado: await loja.calcularProgressoMeta(m) };
+    }));
+    if (metaSelecionadaId && !comProgresso.some((m) => String(m.id) === String(metaSelecionadaId))) {
+      metaSelecionadaId = null;
+    }
     render(comProgresso);
   }
 
+  function cartaoMensal(m) {
+    const p = m.mensal;
+    const pct = p ? p.cobertura : 0;
+    const previsto = p ? p.previsto : 0;
+    const falta = p ? p.falta : m.valorAlvo;
+    return `
+    <div class="card">
+      <div class="flex justify-between items-start">
+        <div><div style="font-weight:700">Meta de recebimento</div>
+        <div class="texto-xs texto-mudo" style="margin-top:2px">Recebimento mensal • ${mesExtenso((m.dataInicio || '').slice(0, 7))}</div></div>
+      </div>
+      <div class="calc-resultado" style="margin:14px 0">
+        <div class="item"><div class="rotulo">Previsto</div><div class="valor">${formatarMoeda(previsto)}</div></div>
+        <div class="item"><div class="rotulo">Meta</div><div class="valor">${formatarMoeda(m.valorAlvo)}</div></div>
+        <div class="item"><div class="rotulo">Falta</div><div class="valor">${formatarMoeda(falta)}</div></div>
+        <div class="item"><div class="rotulo">Cobertura</div><div class="valor">${pct}%</div></div>
+      </div>
+      <div class="barra-progresso" style="margin:0 0 12px"><div class="barra-progresso-preenchida" style="width:${pct}%"></div></div>
+      <div class="flex gap-8" style="flex-wrap:wrap">
+        <button class="btn btn-secundario btn-sm" data-ver-meta="${m.id}">Ver detalhes</button>
+        <button class="btn btn-secundario btn-sm" data-editar-meta="${m.id}">Editar</button>
+        <button class="btn-icone" style="width:32px;height:32px" data-excluir-meta="${m.id}" title="Excluir">${icone('lixo', 15)}</button>
+      </div>
+    </div>`;
+  }
+
+  function cartaoAntigo(m) {
+    const ehQtd = m.tipo === 'quantidade_operacoes';
+    const pct = Math.min(100, Math.round((m.realizado / m.valorAlvo) * 100)) || 0;
+    const faltam = Math.max(0, m.valorAlvo - m.realizado);
+    return `
+    <div class="card">
+      <div class="flex justify-between items-start">
+        <div><div style="font-weight:700">${escapeHtml(m.titulo)}</div><div class="texto-xs texto-mudo" style="margin-top:2px">${TIPOS[m.tipo]} · ${formatarData(m.dataInicio)} a ${formatarData(m.dataFim)}</div></div>
+      </div>
+      <div class="barra-progresso" style="margin:16px 0 8px"><div class="barra-progresso-preenchida" style="width:${pct}%"></div></div>
+      <div class="flex justify-between texto-sm">
+        <span>Realizado: <strong>${ehQtd ? m.realizado : formatarMoeda(m.realizado)}</strong></span>
+        <span class="texto-mudo">${pct}%</span>
+      </div>
+      <div class="texto-xs texto-mudo" style="margin-top:6px">Meta: ${ehQtd ? m.valorAlvo : formatarMoeda(m.valorAlvo)} · Faltam ${ehQtd ? faltam : formatarMoeda(faltam)}</div>
+      <div class="flex gap-8" style="margin-top:12px;flex-wrap:wrap">
+        <button class="btn btn-secundario btn-sm" data-editar-meta="${m.id}">Editar</button>
+        <button class="btn-icone" style="width:32px;height:32px" data-excluir-meta="${m.id}" title="Excluir">${icone('lixo', 15)}</button>
+      </div>
+    </div>`;
+  }
+
+  function detalheMensal(m) {
+    const p = m.mensal;
+    if (!p) return `<div class="card"><p class="texto-sm texto-mudo">Não foi possível calcular esta meta agora.</p></div>`;
+    const mesLabel = mesExtenso(p.mesAlvo);
+    const maxBar = Math.max(m.valorAlvo, ...p.projecao.map((x) => x.previsto), 1);
+    const estimativa = (p.ticketMedio > 0 && p.falta > 0)
+      ? Math.ceil(p.falta / p.ticketMedio) : 0;
+    const hojeIso = dataParaISO(hoje());
+    const comp = p.composicao.map((c) => ({
+      ...c,
+      situacao: c.saldo <= 0 ? 'Recebida' : (c.valorPago > 0 ? 'Parcial' : (c.vencimento < hojeIso ? 'Atrasada' : 'Pendente')),
+    }));
+    const visiveis = verTodasParcelas ? comp : comp.slice(0, 8);
+    return `
+    <div class="card" style="margin-top:18px">
+      <div class="flex justify-between items-start">
+        <div><div style="font-weight:800;font-size:18px">Meta de recebimento</div>
+        <div class="texto-sm texto-mudo">Recebimento mensal</div></div>
+        <button class="btn btn-secundario btn-sm" id="btn-fechar-detalhe">Fechar</button>
+      </div>
+      <div class="grid grid-4" style="margin:16px 0">
+        <div class="card"><div class="card-titulo">Mês-alvo</div><div style="font-size:18px;font-weight:800;margin-top:8px">${mesLabel}</div></div>
+        <div class="card"><div class="card-titulo">Meta mensal</div><div style="font-size:18px;font-weight:800;margin-top:8px">${formatarMoeda(m.valorAlvo)}</div></div>
+        <div class="card"><div class="card-titulo">Previsto no mês</div><div style="font-size:18px;font-weight:800;margin-top:8px">${formatarMoeda(p.previsto)}</div></div>
+        <div class="card"><div class="card-titulo">Já recebido</div><div style="font-size:18px;font-weight:800;margin-top:8px" class="texto-positivo">${formatarMoeda(p.recebido)}</div></div>
+      </div>
+      <div class="card" style="background:var(--cinza-100)"><div class="card-titulo">Falta gerar</div><div style="font-size:22px;font-weight:800;margin-top:8px">${formatarMoeda(p.falta)}</div></div>
+      <div style="margin-top:16px"><div class="texto-sm" style="font-weight:700;margin-bottom:8px">Progresso da meta — ${p.cobertura}%</div>
+        <div class="barra-progresso"><div class="barra-progresso-preenchida" style="width:${p.cobertura}%"></div></div>
+        <p class="texto-sm texto-mudo" style="margin-top:8px">Sua carteira atual cobre ${p.cobertura}% da meta para ${mesLabel.toLowerCase()}.</p></div>
+    </div>
+    <div class="card" style="margin-top:14px;border-left:4px solid var(--verde-esmeralda)">
+      <div class="card-titulo" style="margin-bottom:8px">Como chegar à meta?</div>
+      <p class="texto-sm" style="line-height:1.6">Sua carteira atual tem ${formatarMoeda(p.previsto)} previstos para ${mesLabel.toLowerCase()}${p.recebido > 0 ? ` (${formatarMoeda(p.recebido)} já recebidos)` : ''}.
+      Para atingir sua meta de ${formatarMoeda(m.valorAlvo)}/mês, ainda é necessário gerar aproximadamente ${formatarMoeda(p.falta)} em recebimentos mensais.</p>
+      ${estimativa ? `<p class="texto-sm texto-mudo" style="margin-top:8px">Estimativa: cerca de ${estimativa} parcela(s) como as atuais (tíquete médio ${formatarMoeda(p.ticketMedio)}).</p>` : ''}
+    </div>
+    <div class="card" style="margin-top:14px">
+      <div class="card-titulo" style="margin-bottom:12px">Projeção da carteira (próximos meses)</div>
+      ${p.projecao.map((x) => `
+        <div style="margin-bottom:10px"><div class="flex justify-between texto-sm" style="margin-bottom:4px">
+          <span>${mesExtenso(x.mes)}</span><strong>${formatarMoeda(x.previsto)}</strong></div>
+          <div class="barra-progresso" style="height:10px"><div class="barra-progresso-preenchida" style="width:${Math.min(100, Math.round((x.previsto / maxBar) * 100))}%"></div></div>
+        </div>`).join('')}
+      <div class="texto-xs texto-mudo" style="margin-top:8px;border-top:1px dashed var(--cinza-200);padding-top:8px">Meta — ${formatarMoeda(m.valorAlvo)}</div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <div class="card-titulo" style="margin-bottom:12px">Parcelas previstas para ${mesLabel}</div>
+      ${!comp.length ? '<p class="texto-sm texto-mudo">Nenhuma parcela com vencimento neste mês.</p>' :
+        `<div class="tabela-wrap" style="padding:0"><table class="tabela"><thead><tr><th>Cliente</th><th>Empréstimo</th><th>Parcela</th><th>Vencimento</th><th>Valor</th><th>Situação</th></tr></thead><tbody>
+        ${visiveis.map((c) => `<tr><td>${escapeHtml(c.cliente?.nome || '')}</td><td>#${c.emprestimoId}</td><td>${c.numero}/${c.totalParcelas}</td><td>${formatarData(c.vencimento)}</td><td>${formatarMoeda(c.saldo)}</td><td>${c.situacao}</td></tr>`).join('')}
+        </tbody></table></div>
+        <div class="flex justify-between texto-sm" style="margin-top:10px"><span class="texto-mudo">${comp.length} parcela(s)</span><strong>Total previsto no mês: ${formatarMoeda(p.previsto)}</strong></div>
+        ${comp.length > 8 ? `<button class="btn btn-secundario btn-sm" id="btn-ver-todas" style="margin-top:10px">${verTodasParcelas ? 'Ver menos' : 'Ver todas'}</button>` : ''}`}
+    </div>`;
+  }
+
   function render(metas) {
+    const selecionada = metas.find((m) => String(m.id) === String(metaSelecionadaId) && m.tipo === 'recebimento_mensal');
     container.innerHTML = `
     <div class="pagina-cabecalho">
-      <div><h1 class="pagina-titulo">Metas</h1><p class="pagina-subtitulo">Acompanhe seu progresso.</p></div>
+      <div><h1 class="pagina-titulo">Metas</h1><p class="pagina-subtitulo">Planeje quanto receber por mês.</p></div>
       <button class="btn btn-primario" id="btn-nova-meta">${icone('mais2', 17)} Nova meta</button>
     </div>
-    <div id="lista-metas" class="grid grid-2"></div>`;
+    <div id="lista-metas" class="grid grid-2"></div>
+    <div id="detalhe-meta"></div>`;
 
     const alvo = container.querySelector('#lista-metas');
-    alvo.innerHTML = !metas.length ? estadoVazio({ iconeNome: 'metas', titulo: 'Nenhuma meta cadastrada', descricao: 'Defina metas de capital, recebimento, ganho ou operações.' }) :
-      metas.map((m) => {
-        const ehQtd = m.tipo === 'quantidade_operacoes';
-        const pct = Math.min(100, Math.round((m.realizado / m.valorAlvo) * 100)) || 0;
-        const faltam = Math.max(0, m.valorAlvo - m.realizado);
-        return `
-        <div class="card">
-          <div class="flex justify-between items-start">
-            <div><div style="font-weight:700">${escapeHtml(m.titulo)}</div><div class="texto-xs texto-mudo" style="margin-top:2px">${TIPOS[m.tipo]} · ${formatarData(m.dataInicio)} a ${formatarData(m.dataFim)}</div></div>
-            <button class="btn-icone" data-excluir-meta="${m.id}">${icone('lixo', 16)}</button>
-          </div>
-          <div class="barra-progresso" style="margin:16px 0 8px"><div class="barra-progresso-preenchida" style="width:${pct}%"></div></div>
-          <div class="flex justify-between texto-sm">
-            <span>Realizado: <strong>${ehQtd ? m.realizado : formatarMoeda(m.realizado)}</strong></span>
-            <span class="texto-mudo">${pct}%</span>
-          </div>
-          <div class="texto-xs texto-mudo" style="margin-top:6px">Meta: ${ehQtd ? m.valorAlvo : formatarMoeda(m.valorAlvo)} · Faltam ${ehQtd ? faltam : formatarMoeda(faltam)}</div>
-        </div>`;
-      }).join('');
+    alvo.innerHTML = !metas.length ? estadoVazio({ iconeNome: 'metas', titulo: 'Nenhuma meta cadastrada', descricao: 'Defina quanto deseja receber por mês.' }) :
+      metas.map((m) => (m.tipo === 'recebimento_mensal' ? cartaoMensal(m) : cartaoAntigo(m))).join('');
 
+    const detalhe = container.querySelector('#detalhe-meta');
+    detalhe.innerHTML = selecionada ? detalheMensal(selecionada) : '';
+    detalhe.querySelector('#btn-fechar-detalhe')?.addEventListener('click', () => { metaSelecionadaId = null; verTodasParcelas = false; render(metas); });
+    detalhe.querySelector('#btn-ver-todas')?.addEventListener('click', () => { verTodasParcelas = !verTodasParcelas; render(metas); });
+
+    alvo.querySelectorAll('[data-ver-meta]').forEach((b) => b.addEventListener('click', () => {
+      metaSelecionadaId = b.dataset.verMeta; verTodasParcelas = false; render(metas);
+      document.querySelector('#detalhe-meta')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }));
+    alvo.querySelectorAll('[data-editar-meta]').forEach((b) => b.addEventListener('click', () => {
+      const m = metas.find((x) => String(x.id) === String(b.dataset.editarMeta));
+      if (m) abrirModalEditarMeta(m, { aoSalvar: carregar });
+    }));
     alvo.querySelectorAll('[data-excluir-meta]').forEach((b) => b.addEventListener('click', async () => {
       const ok = await confirmarAcao({ titulo: 'Excluir meta', mensagem: 'Deseja realmente excluir esta meta?', textoConfirmar: 'Excluir' });
       if (ok) { await loja.excluirMeta(b.dataset.excluirMeta); toast('Meta excluída.', 'sucesso'); carregar(); }
@@ -3699,7 +3992,7 @@ async function renderMetas(container) {
   await carregar();
 }
 
-  Object.assign(window.CP, { abrirModalNovaMeta, renderMetas });
+  Object.assign(window.CP, { abrirModalNovaMeta, abrirModalEditarMeta, renderMetas });
 })();
 window.CP = window.CP || {};
 (function () {
