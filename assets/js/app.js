@@ -5560,20 +5560,55 @@ function wireFolhaMais() {
   folha?.querySelectorAll('a').forEach((a) => a.addEventListener('click', () => { folha.style.display = 'none'; }));
 }
 
+let seqNavegacao = 0;
+
+// Correção central contra render obsoleta: cada navegação ganha um número
+// de sequência; escritas vindas de uma navegação anterior (fetch lento que
+// resolve depois da troca de rota) são descartadas em vez de sobrescrever
+// a tela atual. Vale para innerHTML direto e para elementos obtidos via
+// querySelector, sem tocar em nenhuma tela individual.
+function protegerContainer(raiz, minha) {
+  const viva = () => minha === seqNavegacao;
+  function envolver(no) {
+    if (!no || typeof no !== 'object') return no;
+    return new Proxy(no, {
+      get(alvo, prop) {
+        const valor = alvo[prop];
+        if (typeof valor !== 'function') return valor;
+        return (...args) => {
+          const r = valor.apply(alvo, args);
+          if (typeof Element !== 'undefined' && r instanceof Element) return envolver(r);
+          if (typeof NodeList !== 'undefined' && r instanceof NodeList) return Array.from(r, envolver);
+          return r;
+        };
+      },
+      set(alvo, prop, valor) {
+        if (!viva()) return true;
+        alvo[prop] = valor;
+        return true;
+      },
+    });
+  }
+  return envolver(raiz);
+}
+
 async function rotearAtual() {
+  const minha = ++seqNavegacao;
   const { base, params } = analisarRota();
   const conteudo = document.getElementById('conteudo-pagina');
+  const tela = protegerContainer(conteudo, minha);
   renderShell();
 
   if (base === 'clientes' && params[0]) {
-    await renderClienteDetalhe(conteudo, { clienteId: params[0], navegarClientes, abrirNovoEmprestimo, abrirRegistrarPagamento });
+    await renderClienteDetalhe(tela, { clienteId: params[0], navegarClientes, abrirNovoEmprestimo, abrirRegistrarPagamento });
     return;
   }
   const handler = ROTAS[base] || ROTAS.dashboard;
   try {
-    await handler(conteudo);
+    await handler(tela);
   } catch (err) {
-    conteudo.innerHTML = `<div class="pagina"><div class="alerta alerta-erro">Ocorreu um erro ao carregar esta página. ${err instanceof ErroAPI ? err.message : 'Tente novamente.'}</div></div>`;
+    if (minha !== seqNavegacao) return;
+    tela.innerHTML = `<div class="pagina"><div class="alerta alerta-erro">Ocorreu um erro ao carregar esta página. ${err instanceof ErroAPI ? err.message : 'Tente novamente.'}</div></div>`;
   }
 }
 
@@ -5614,6 +5649,7 @@ function encerrarSessao() {
 }
 
 function mostrarTelaLogin() {
+  seqNavegacao++; // invalida renders em voo (ex.: logout durante carregamento)
   mostrarTelaAuth((c) => renderLogin(c, {
     aoAutenticar: (usuario) => iniciarAppAutenticado(usuario),
     irParaRegistro: () => mostrarTelaAuth((c2) => renderRegistro(c2, { aoRegistrar: iniciarAppAutenticado, irParaLogin: mostrarTelaLogin })),
