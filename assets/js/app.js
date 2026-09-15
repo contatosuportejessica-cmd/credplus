@@ -416,7 +416,30 @@ window.CP = window.CP || {};
     return `Erro ao comunicar com o servidor (${status}).`;
   }
 
+  // Deduplicação de GET em voo: se a MESMA URL já tem uma requisição
+  // pendente, devolve a promessa dela em vez de abrir outra — só isso.
+  // Sem TTL, sem guardar resultado depois de resolvida: assim que a
+  // requisição termina (sucesso OU erro), sai do mapa, e a PRÓXIMA chamada
+  // — mesmo que idêntica — vai à rede de novo. Nunca cacheia POST/PUT/DELETE.
+  // Existe porque os logs de produção mostraram /api/emprestimos chamado 5x
+  // em 7s (telas/handlers diferentes pedindo os mesmos dados ao mesmo
+  // tempo) — cada clique/atualização legítima e espaçada continua indo à
+  // rede normalmente.
+  const _getsEmVoo = new Map();
+
   async function requisicao(caminho, { method = 'GET', body, headers = {}, isFormData = false } = {}) {
+    if (method === 'GET') {
+      const emVoo = _getsEmVoo.get(caminho);
+      if (emVoo) return emVoo;
+      const promessa = _requisicaoSemDedup(caminho, { method, body, headers, isFormData })
+        .finally(() => _getsEmVoo.delete(caminho));
+      _getsEmVoo.set(caminho, promessa);
+      return promessa;
+    }
+    return _requisicaoSemDedup(caminho, { method, body, headers, isFormData });
+  }
+
+  async function _requisicaoSemDedup(caminho, { method = 'GET', body, headers = {}, isFormData = false } = {}) {
     const token = obterToken();
     const opcoes = {
       method,
