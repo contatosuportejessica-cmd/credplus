@@ -1,4 +1,34 @@
 {
   "framework": null,
-  "outputDirectory": "."
+  "outputDirectory": ".",
+  "rewrites": [
+    { "source": "/api/auth", "destination": "/api/d-auth?__g=auth&__r=" },
+    { "source": "/api/auth/:r*", "destination": "/api/d-auth?__g=auth&__r=:r*" },
+    { "source": "/api/clientes", "destination": "/api/d-cad?__g=clientes&__r=" },
+    { "source": "/api/clientes/:r*", "destination": "/api/d-cad?__g=clientes&__r=:r*" },
+    { "source": "/api/emprestimos", "destination": "/api/d-oper?__g=emprestimos&__r=" },
+    { "source": "/api/emprestimos/:r*", "destination": "/api/d-oper?__g=emprestimos&__r=:r*" },
+    { "source": "/api/parcelas", "destination": "/api/d-oper?__g=parcelas&__r=" },
+    { "source": "/api/parcelas/:r*", "destination": "/api/d-oper?__g=parcelas&__r=:r*" },
+    { "source": "/api/simulacoes", "destination": "/api/d-oper?__g=simulacoes&__r=" },
+    { "source": "/api/simulacoes/:r*", "destination": "/api/d-oper?__g=simulacoes&__r=:r*" },
+    { "source": "/api/pagamentos", "destination": "/api/d-fin?__g=pagamentos&__r=" },
+    { "source": "/api/pagamentos/:r*", "destination": "/api/d-fin?__g=pagamentos&__r=:r*" },
+    { "source": "/api/financeiro", "destination": "/api/d-fin?__g=financeiro&__r=" },
+    { "source": "/api/financeiro/:r*", "destination": "/api/d-fin?__g=financeiro&__r=:r*" },
+    { "source": "/api/cobrancas", "destination": "/api/d-rot?__g=cobrancas&__r=" },
+    { "source": "/api/cobrancas/:r*", "destination": "/api/d-rot?__g=cobrancas&__r=:r*" },
+    { "source": "/api/dashboard", "destination": "/api/d-rot?__g=dashboard&__r=" },
+    { "source": "/api/dashboard/:r*", "destination": "/api/d-rot?__g=dashboard&__r=:r*" },
+    { "source": "/api/busca", "destination": "/api/d-rot?__g=busca&__r=" },
+    { "source": "/api/busca/:r*", "destination": "/api/d-rot?__g=busca&__r=:r*" },
+    { "source": "/api/lembretes", "destination": "/api/d-rot?__g=lembretes&__r=" },
+    { "source": "/api/lembretes/:r*", "destination": "/api/d-rot?__g=lembretes&__r=:r*" },
+    { "source": "/api/metas", "destination": "/api/d-met?__g=metas&__r=" },
+    { "source": "/api/metas/:r*", "destination": "/api/d-met?__g=metas&__r=:r*" },
+    { "source": "/api/notas", "destination": "/api/d-met?__g=notas&__r=" },
+    { "source": "/api/notas/:r*", "destination": "/api/d-met?__g=notas&__r=:r*" },
+    { "source": "/api/usuario", "destination": "/api/d-conta?__g=usuario&__r=" },
+    { "source": "/api/usuario/:r*", "destination": "/api/d-conta?__g=usuario&__r=:r*" }
+  ]
 }
