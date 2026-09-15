@@ -503,13 +503,34 @@ window.CP = window.CP || {};
 
   const auth = {
     login: (email, senha) => api.post('/auth/login', { email, senha }),
-    registrar: (nome, email, senha) => api.post('/auth/register', { nome, email, senha }),
+    registrar: (nome, email, senha, pergunta, resposta) => api.post('/auth/register', { nome, email, senha, pergunta, resposta }),
     me: () => api.get('/auth/me'),
     logout: () => api.post('/auth/logout', {}),
-    esqueciSenha: (email) => api.post('/auth/esqueci-senha', { email }),
+    recuperarPergunta: (email) => api.post('/auth/recuperar/pergunta', { email }),
+    redefinirSenha: (email, resposta, senha_nova) => api.post('/auth/recuperar/redefinir', { email, resposta, senha_nova }),
   };
 
-  Object.assign(window.CP, { obterToken, salvarToken, limparToken, ErroAPI, api, auth });
+  const PERGUNTAS_RECUPERACAO = [
+    'Em qual cidade você nasceu?',
+    'Qual era o nome do seu primeiro animal de estimação?',
+    'Qual é sua comida favorita?',
+    'Qual país você gostaria de conhecer?',
+    'Qual é o segundo nome da sua mãe?',
+    'Qual é o segundo nome do seu pai?',
+    'Qual era seu apelido de infância?',
+    'Qual era o nome do seu primeiro professor ou professora?',
+    'Qual é seu filme favorito?',
+    'Qual o primeiro nome de uma pessoa importante da sua infância?',
+  ];
+
+  function opcoesPerguntasQuestionario(selecionada) {
+    const esc = window.CP.escapeHtml;
+    return ['<option value="">Selecione uma pergunta...</option>']
+      .concat(PERGUNTAS_RECUPERACAO.map((p) => `<option value="${esc(p)}"${p === selecionada ? ' selected' : ''}>${esc(p)}</option>`))
+      .join('');
+  }
+
+  Object.assign(window.CP, { obterToken, salvarToken, limparToken, ErroAPI, api, auth, PERGUNTAS_RECUPERACAO, opcoesPerguntasQuestionario });
 })();
 window.CP = window.CP || {};
 (function () {
@@ -1334,7 +1355,7 @@ function faixaDemo() {
 window.CP = window.CP || {};
 (function () {
   'use strict';
-  const { auth, salvarToken, ErroAPI, icone, toast } = window.CP;
+  const { auth, salvarToken, ErroAPI, icone, toast, escapeHtml } = window.CP;
 
 function validarEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -1448,6 +1469,8 @@ function renderRegistro(container, { aoRegistrar, irParaLogin }) {
           <div class="campo"><label>E-mail</label><input class="input" type="email" id="reg-email" required></div>
           <div class="campo"><label>Senha</label><input class="input" type="password" id="reg-senha" required minlength="6"></div>
           <div class="campo"><label>Confirmar senha</label><input class="input" type="password" id="reg-confirmar" required minlength="6"></div>
+          <div class="campo"><label>Pergunta de recuperação</label><select class="select" id="reg-pergunta" required></select></div>
+          <div class="campo"><label>Resposta secreta</label><input class="input" id="reg-resposta" required minlength="3" autocomplete="off" placeholder="Usada para recuperar sua senha"><p class="texto-xs texto-mudo" style="margin-top:6px">Só você sabe — guardamos apenas uma versão protegida dela.</p></div>
           <button type="submit" class="btn btn-primario btn-bloco" id="btn-criar-conta">Criar conta</button>
         </form>
         <p style="text-align:center;margin-top:22px;font-size:13.5px" class="texto-mudo">
@@ -1458,6 +1481,7 @@ function renderRegistro(container, { aoRegistrar, irParaLogin }) {
   </div>`;
 
   container.querySelector('#link-login').addEventListener('click', (e) => { e.preventDefault(); irParaLogin(); });
+  container.querySelector('#reg-pergunta').innerHTML = window.CP.opcoesPerguntasQuestionario('');
 
   container.querySelector('#form-registro').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -1465,6 +1489,8 @@ function renderRegistro(container, { aoRegistrar, irParaLogin }) {
     const email = container.querySelector('#reg-email').value.trim();
     const senha = container.querySelector('#reg-senha').value;
     const confirmar = container.querySelector('#reg-confirmar').value;
+    const pergunta = container.querySelector('#reg-pergunta').value;
+    const resposta = container.querySelector('#reg-resposta').value;
     const areaAlerta = container.querySelector('#area-alerta-registro');
     areaAlerta.innerHTML = '';
 
@@ -1472,15 +1498,17 @@ function renderRegistro(container, { aoRegistrar, irParaLogin }) {
     if (!validarEmail(email)) return areaAlerta.innerHTML = `<div class="alerta alerta-erro">Informe um e-mail válido.</div>`;
     if (senha.length < 6) return areaAlerta.innerHTML = `<div class="alerta alerta-erro">A senha deve ter ao menos 6 caracteres.</div>`;
     if (senha !== confirmar) return areaAlerta.innerHTML = `<div class="alerta alerta-erro">As senhas não coincidem.</div>`;
+    if (!window.CP.PERGUNTAS_RECUPERACAO.includes(pergunta)) return areaAlerta.innerHTML = `<div class="alerta alerta-erro">Escolha uma pergunta de recuperação.</div>`;
+    if (resposta.trim().length < 3) return areaAlerta.innerHTML = `<div class="alerta alerta-erro">A resposta secreta deve ter ao menos 3 caracteres.</div>`;
 
     const btn = container.querySelector('#btn-criar-conta');
     btn.disabled = true;
     btn.textContent = 'Criando conta...';
     try {
-      const resposta = await auth.registrar(nome, email, senha);
-      if (resposta?.token) {
-        salvarToken(resposta.token, true);
-        aoRegistrar(resposta.usuario);
+      const resposta2 = await auth.registrar(nome, email, senha, pergunta, resposta);
+      if (resposta2?.token) {
+        salvarToken(resposta2.token, true);
+        aoRegistrar(resposta2.usuario);
       } else {
         toast('Conta criada! Faça login para continuar.', 'sucesso');
         irParaLogin();
@@ -1497,41 +1525,120 @@ function renderRegistro(container, { aoRegistrar, irParaLogin }) {
 }
 
 function renderEsqueciSenha(container, { irParaLogin }) {
-  container.innerHTML = `
-  <div class="auth-tela">
-    <div class="auth-painel-visual">
-      <div class="marca"><div class="marca-icone">${icone('grafico', 20, '#052e21')}</div><span>CredPlus</span></div>
-      <h1 class="slogan-grande">Vamos recuperar seu acesso.</h1>
-    </div>
-    <div class="auth-painel-form">
-      <div class="auth-card">
-        <h2 style="font-size:26px;margin-bottom:6px">Recuperar senha</h2>
-        <p class="texto-mudo" style="margin-bottom:26px">Informe seu e-mail cadastrado.</p>
-        <div id="area-alerta-recuperar"></div>
-        <form id="form-recuperar">
-          <div class="campo"><label>E-mail</label><input class="input" type="email" id="rec-email" required></div>
-          <button type="submit" class="btn btn-primario btn-bloco">Enviar instruções</button>
-        </form>
-        <p style="text-align:center;margin-top:22px;font-size:13.5px" class="texto-mudo">
-          <a href="#" id="link-voltar-login" class="link-verde">Voltar para o login</a>
-        </p>
-      </div>
-    </div>
-  </div>`;
+  // Recuperação por pergunta secreta (sem e-mail): 3 etapas no mesmo cartão.
+  // Etapa 1: e-mail -> Etapa 2: pergunta + resposta -> Etapa 3: nova senha.
+  let etapa = 1;
+  let emailRec = '';
+  let perguntaRec = '';
 
-  container.querySelector('#link-voltar-login').addEventListener('click', (e) => { e.preventDefault(); irParaLogin(); });
-  container.querySelector('#form-recuperar').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const email = container.querySelector('#rec-email').value.trim();
-    const areaAlerta = container.querySelector('#area-alerta-recuperar');
-    if (!validarEmail(email)) { areaAlerta.innerHTML = `<div class="alerta alerta-erro">Informe um e-mail válido.</div>`; return; }
-    try {
-      await auth.esqueciSenha(email);
-      areaAlerta.innerHTML = `<div class="alerta alerta-sucesso">Se este e-mail existir em nossa base, você receberá instruções em instantes.</div>`;
-    } catch (err) {
-      areaAlerta.innerHTML = `<div class="alerta alerta-aviso">${icone('info', 16)} A recuperação de senha por e-mail ainda não está disponível neste servidor (endpoint pendente no backend). Entre em contato com o suporte para redefinir sua senha manualmente.</div>`;
-    }
-  });
+  function moldura(titulo, subtitulo, corpoHtml) {
+    container.innerHTML = `
+    <div class="auth-tela">
+      <div class="auth-painel-visual">
+        <div class="marca"><div class="marca-icone">${icone('grafico', 20, '#052e21')}</div><span>CredPlus</span></div>
+        <h1 class="slogan-grande">Vamos recuperar seu acesso.</h1>
+      </div>
+      <div class="auth-painel-form">
+        <div class="auth-card">
+          <div class="texto-sm texto-mudo" style="margin-bottom:8px">Etapa ${etapa} de 3</div>
+          <h2 style="font-size:26px;margin-bottom:6px">${titulo}</h2>
+          <p class="texto-mudo" style="margin-bottom:26px">${subtitulo}</p>
+          <div id="area-alerta-recuperar"></div>
+          ${corpoHtml}
+          <p style="text-align:center;margin-top:22px;font-size:13.5px" class="texto-mudo">
+            <a href="#" id="link-voltar-login" class="link-verde">Voltar para o login</a>
+          </p>
+        </div>
+      </div>
+    </div>`;
+    container.querySelector('#link-voltar-login').addEventListener('click', (e) => { e.preventDefault(); irParaLogin(); });
+  }
+
+  function alerta(msg, tipo) {
+    container.querySelector('#area-alerta-recuperar').innerHTML =
+      `<div class="alerta alerta-${tipo || 'erro'}">${msg}</div>`;
+  }
+
+  function etapa1() {
+    etapa = 1;
+    moldura('Recuperar senha', 'Informe o e-mail da sua conta.', `
+      <form id="form-recuperar">
+        <div class="campo"><label>E-mail</label><input class="input" type="email" id="rec-email" required></div>
+        <button type="submit" class="btn btn-primario btn-bloco" id="btn-rec-1">Continuar</button>
+      </form>`);
+    container.querySelector('#form-recuperar').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const email = container.querySelector('#rec-email').value.trim();
+      if (!validarEmail(email)) { alerta('Informe um e-mail válido.'); return; }
+      const btn = container.querySelector('#btn-rec-1');
+      btn.disabled = true;
+      btn.textContent = 'Verificando...';
+      try {
+        const r = await auth.recuperarPergunta(email);
+        emailRec = email;
+        perguntaRec = r.pergunta;
+        etapa2();
+      } catch (err) {
+        alerta(err.message || 'Não foi possível continuar. Tente novamente.');
+        btn.disabled = false;
+        btn.textContent = 'Continuar';
+      }
+    });
+  }
+
+  function etapa2() {
+    etapa = 2;
+    moldura('Pergunta de segurança', 'Responda para confirmar que é você.', `
+      <form id="form-recuperar">
+        <div class="campo"><label>Sua pergunta</label><div class="input" style="background:var(--cinza-100)">${escapeHtml(perguntaRec)}</div></div>
+        <div class="campo"><label>Resposta secreta</label><input class="input" id="rec-resposta" autocomplete="off" required></div>
+        <button type="submit" class="btn btn-primario btn-bloco" id="btn-rec-2">Verificar resposta</button>
+      </form>`);
+    container.querySelector('#form-recuperar').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const resposta = container.querySelector('#rec-resposta').value;
+      if (!resposta.trim()) { alerta('Informe a resposta secreta.'); return; }
+      container.querySelector('#form-recuperar').dataset.resposta = resposta;
+      etapa3();
+    });
+  }
+
+  function etapa3() {
+    etapa = 3;
+    const resposta = container.querySelector('#form-recuperar')?.dataset.resposta || '';
+    moldura('Nova senha', 'Escolha uma senha nova para sua conta.', `
+      <form id="form-recuperar">
+        <div class="campo"><label>Nova senha</label><input class="input" type="password" id="rec-nova" minlength="6" required></div>
+        <div class="campo"><label>Confirmar nova senha</label><input class="input" type="password" id="rec-confirmar" minlength="6" required></div>
+        <button type="submit" class="btn btn-primario btn-bloco" id="btn-rec-3">Alterar senha</button>
+      </form>`);
+    container.querySelector('#form-recuperar').dataset.resposta = resposta;
+    container.querySelector('#form-recuperar').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const resp = e.target.dataset.resposta || '';
+      const nova = container.querySelector('#rec-nova').value;
+      const confirmar = container.querySelector('#rec-confirmar').value;
+      if (nova.length < 6) { alerta('A nova senha deve ter ao menos 6 caracteres.'); return; }
+      if (nova !== confirmar) { alerta('As senhas não coincidem.'); return; }
+      const btn = container.querySelector('#btn-rec-3');
+      btn.disabled = true;
+      btn.textContent = 'Alterando...';
+      try {
+        await auth.redefinirSenha(emailRec, resp, nova);
+        etapa = 3;
+        moldura('Senha alterada', 'Tudo certo! Entre com sua nova senha.', `
+          <div class="alerta alerta-sucesso">Sua senha foi alterada com sucesso.</div>
+          <button class="btn btn-primario btn-bloco" id="btn-ir-login">Ir para o login</button>`);
+        container.querySelector('#btn-ir-login').addEventListener('click', () => irParaLogin());
+      } catch (err) {
+        alerta(err.message || 'Não foi possível alterar a senha.');
+        btn.disabled = false;
+        btn.textContent = 'Alterar senha';
+      }
+    });
+  }
+
+  etapa1();
 }
 
   Object.assign(window.CP, { renderLogin, renderRegistro, renderEsqueciSenha });
@@ -3825,6 +3932,13 @@ async function renderConfiguracoes(container, { usuario, aoSair, aoAtualizarUsua
         <div class="campo"><label>Confirmar nova senha</label><input class="input" type="password" id="cfg-senha-confirmar" minlength="6"></div>
         <button class="btn btn-primario" id="btn-alterar-senha">Alterar senha</button>
         <hr style="margin:22px 0;border:none;border-top:1px solid var(--cinza-100)">
+        <div class="card-titulo" style="margin-bottom:10px">Pergunta de recuperação</div>
+        <p class="texto-sm texto-mudo" style="margin-bottom:14px">Pergunta atual: <strong>${escapeHtml(usuario?.pergunta_recuperacao || 'nenhuma cadastrada')}</strong>${usuario?.pergunta_recuperacao ? '' : ' — cadastre uma para poder recuperar sua senha sem e-mail.'}</p>
+        <div class="campo"><label>Nova pergunta</label><select class="select" id="cfg-pergunta"></select></div>
+        <div class="campo"><label>Nova resposta secreta</label><input class="input" id="cfg-resposta" autocomplete="off" minlength="3"></div>
+        <div class="campo"><label>Confirme com sua senha atual</label><input class="input" type="password" id="cfg-rec-senha"></div>
+        <button class="btn btn-secundario" id="btn-salvar-recuperacao">Salvar pergunta de recuperação</button>
+        <hr style="margin:22px 0;border:none;border-top:1px solid var(--cinza-100)">
         <button class="btn btn-perigo btn-bloco" id="btn-logout">${'Encerrar sessão'}</button>
       </div>`;
       alvo.querySelector('#btn-alterar-senha').addEventListener('click', async () => {
@@ -3843,6 +3957,22 @@ async function renderConfiguracoes(container, { usuario, aoSair, aoAtualizarUsua
       alvo.querySelector('#btn-logout').addEventListener('click', async () => {
         const ok = await confirmarAcao({ titulo: 'Encerrar sessão', mensagem: 'Deseja realmente sair da sua conta?', textoConfirmar: 'Sair', perigo: false });
         if (ok) aoSair();
+      });
+      alvo.querySelector('#cfg-pergunta').innerHTML = window.CP.opcoesPerguntasQuestionario(usuario?.pergunta_recuperacao || '');
+      alvo.querySelector('#btn-salvar-recuperacao').addEventListener('click', async () => {
+        const pergunta = alvo.querySelector('#cfg-pergunta').value;
+        const resposta = alvo.querySelector('#cfg-resposta').value;
+        const senhaAtual = alvo.querySelector('#cfg-rec-senha').value;
+        if (!window.CP.PERGUNTAS_RECUPERACAO.includes(pergunta)) return toast('Escolha uma pergunta de recuperação.', 'erro');
+        if (resposta.trim().length < 3) return toast('A resposta secreta deve ter ao menos 3 caracteres.', 'erro');
+        if (!senhaAtual) return toast('Informe sua senha atual para confirmar.', 'erro');
+        try {
+          const atualizado = await api.put('/usuario/recuperacao', { pergunta, resposta, senha_atual: senhaAtual });
+          toast('Pergunta de recuperação atualizada.', 'sucesso');
+          aoAtualizarUsuario?.(atualizado);
+        } catch (err) {
+          toast(err.message || 'Erro ao salvar.', 'erro');
+        }
       });
     } else if (abaAtual === 'dados') {
       alvo.innerHTML = `
