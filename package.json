@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "description": "CredPlus — frontend estático na raiz + API serverless da Vercel em /api (Node puro, sem Express), com PostgreSQL/Neon.",
   "dependencies": {
-    "pg": "^8.22.0",
-    "jsonwebtoken": "^9.0.2"
+    "@vercel/functions": "^3.9.7",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.22.0"
   }
 }
