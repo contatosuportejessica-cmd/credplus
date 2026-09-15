@@ -2775,7 +2775,7 @@ async function renderClienteDetalhe(container, { clienteId, navegarClientes, abr
   await carregar();
 }
 
-  Object.assign(window.CP, { abrirModalNovoCliente, abrirModalEditarCliente, renderClientes, renderClienteDetalhe });
+  Object.assign(window.CP, { abrirModalNovoCliente, abrirModalEditarCliente, renderClientes, renderClienteDetalhe, formatarTelefoneExibicao });
 })();
 window.CP = window.CP || {};
 (function () {
@@ -4434,7 +4434,7 @@ async function renderRelatorios(container) {
 window.CP = window.CP || {};
 (function () {
   'use strict';
-  const { api, ErroAPI, limparToken, loja, iniciais, escapeHtml, toast, confirmarAcao, estadoVazio } = window.CP;
+  const { api, ErroAPI, limparToken, loja, iniciais, escapeHtml, toast, confirmarAcao, estadoVazio, normalizarTelefone, formatarTelefoneExibicao } = window.CP;
 
 async function renderConfiguracoes(container, { usuario, aoSair, aoAtualizarUsuario }) {
   let abaAtual = 'perfil';
@@ -4500,7 +4500,7 @@ async function renderConfiguracoes(container, { usuario, aoSair, aoAtualizarUsua
         <div class="campo"><label>Foto de perfil</label><input class="input" type="file" id="cfg-foto" accept="image/jpeg,image/png,image/webp"><p class="texto-xs texto-mudo" style="margin-top:6px">A imagem é reduzida automaticamente (máx. 256px) antes de salvar.</p></div>
         <div class="campo"><label>Nome</label><input class="input" id="cfg-nome" value="${escapeHtml(usuario?.nome || '')}"></div>
         <div class="campo"><label>E-mail</label><input class="input" id="cfg-email" value="${escapeHtml(usuario?.email || '')}" disabled readonly></div>
-        <div class="campo"><label>Telefone</label><input class="input" id="cfg-telefone" value="${escapeHtml(usuario?.telefone || '')}"></div>
+        <div class="campo"><label>WhatsApp / Telefone</label><input class="input" id="cfg-telefone" inputmode="tel" placeholder="(11) 99999-9999" value="${escapeHtml(formatarTelefoneExibicao(usuario?.telefone || ''))}"><p class="texto-xs texto-mudo" style="margin-top:6px">Informe o número que você utiliza para atender e falar com seus clientes.</p></div>
         <button class="btn btn-primario" id="btn-salvar-perfil">Salvar alterações</button>
         <hr style="margin:22px 0;border:none;border-top:1px solid var(--cinza-100)">
         <button class="btn btn-secundario btn-bloco" id="btn-sair-conta">Sair da conta</button>
@@ -4517,9 +4517,12 @@ async function renderConfiguracoes(container, { usuario, aoSair, aoAtualizarUsua
           ev.target.value = '';
         }
       });
+      alvo.querySelector('#cfg-telefone').addEventListener('input', (ev) => {
+        ev.target.value = formatarTelefoneExibicao(ev.target.value);
+      });
       alvo.querySelector('#btn-salvar-perfil').addEventListener('click', async () => {
         try {
-          const corpo = { nome: alvo.querySelector('#cfg-nome').value.trim(), telefone: alvo.querySelector('#cfg-telefone').value.trim() };
+          const corpo = { nome: alvo.querySelector('#cfg-nome').value.trim(), telefone: normalizarTelefone(alvo.querySelector('#cfg-telefone').value) };
           if (fotoNova) corpo.foto = fotoNova;
           const atualizado = await api.put('/usuario/perfil', corpo);
           toast('Perfil atualizado.', 'sucesso');
