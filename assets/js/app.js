@@ -3782,18 +3782,18 @@ async function renderLembretes(container) {
     container.querySelector('#btn-novo-lembrete').addEventListener('click', () => abrirModalNovoLembrete({ aoSalvar: carregar }));
   }
 
-let lembreteDestaqueId = null;
-let abrirWhatsAppAposNavegar = false;
+  let lembreteDestaqueId = null;
+  let abrirWhatsAppAposNavegar = false;
 
-function irParaLembretesTela() {
-  window.location.hash = '#/lembretes';
-}
+  function irParaLembretesTela() {
+    window.location.hash = '#/lembretes';
+  }
 
-function irParaLembreteViaNotificacao(lembreteId, comWhatsApp) {
-  lembreteDestaqueId = lembreteId;
-  abrirWhatsAppAposNavegar = !!comWhatsApp;
-  irParaLembretesTela();
-}
+  function irParaLembreteViaNotificacao(lembreteId, comWhatsApp) {
+    lembreteDestaqueId = lembreteId;
+    abrirWhatsAppAposNavegar = !!comWhatsApp;
+    irParaLembretesTela();
+  }
 
   function linhaLembrete(l) {
     const cob = l.cobranca && l.cobranca.parcela ? l.cobranca : null;
