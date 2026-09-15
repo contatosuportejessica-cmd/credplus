@@ -3782,19 +3782,6 @@ async function renderLembretes(container) {
     container.querySelector('#btn-novo-lembrete').addEventListener('click', () => abrirModalNovoLembrete({ aoSalvar: carregar }));
   }
 
-  let lembreteDestaqueId = null;
-  let abrirWhatsAppAposNavegar = false;
-
-  function irParaLembretesTela() {
-    window.location.hash = '#/lembretes';
-  }
-
-  function irParaLembreteViaNotificacao(lembreteId, comWhatsApp) {
-    lembreteDestaqueId = lembreteId;
-    abrirWhatsAppAposNavegar = !!comWhatsApp;
-    irParaLembretesTela();
-  }
-
   function linhaLembrete(l) {
     const cob = l.cobranca && l.cobranca.parcela ? l.cobranca : null;
     const infoCobranca = cob ? `
@@ -3977,6 +3964,21 @@ async function renderLembretes(container) {
 
   await carregar();
 }
+
+  // Estado da chegada via notificação — declarações no escopo do IIFE
+  // (não dentro de renderLembretes), pois o Object.assign abaixo as expõe.
+  let lembreteDestaqueId = null;
+  let abrirWhatsAppAposNavegar = false;
+
+  function irParaLembretesTela() {
+    window.location.hash = '#/lembretes';
+  }
+
+  function irParaLembreteViaNotificacao(lembreteId, comWhatsApp) {
+    lembreteDestaqueId = lembreteId;
+    abrirWhatsAppAposNavegar = !!comWhatsApp;
+    irParaLembretesTela();
+  }
 
   Object.assign(window.CP, { abrirModalNovoLembrete, renderLembretes, irParaLembreteViaNotificacao });
 })();
